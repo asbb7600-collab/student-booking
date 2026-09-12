@@ -77,8 +77,8 @@
       document.getElementById("calendar-date-input").value = currentStartDate.toISOString().split('T')[0];
       startFirebaseListeners();
 
-      // 請填入您為學生版申請的 LINE LIFF ID (可先填寫與原專案相同測試)
-      liff.init({ liffId: "2010786850-r8HyiT5u" })
+      // 已自動替換為您申請的新學生版 LINE LIFF ID
+      liff.init({ liffId: "2010786850-Dl999iMJ" })
       .then(() => {
         if (!liff.isLoggedIn()) {
           liff.login();
