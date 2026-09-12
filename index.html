@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>學員預約與課堂扣點系統</title>
+  
+  <!-- LINE LIFF SDK -->
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+
+  <!-- Firebase SDK (v9 相容版本) -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+  <script>
+    // 請替換為您的 Firebase 設定金鑰 (建議可先延用相同的 Firebase 專案，資料節點會自動完全隔離)
+    const firebaseConfig = {
+      apiKey: "AIzaSyBnvqcHnCfjAdBoF-qT03X0gpInzSZtiGE",
+      authDomain: "jimai-booking.firebaseapp.com",
+      databaseURL: "https://jimai-booking-default-rtdb.firebaseio.com",
+      projectId: "jimai-booking",
+      storageBucket: "jimai-booking.firebasestorage.app",
+      messagingSenderId: "716257034873",
+      appId: "1:716257034873:web:e942e1e8c22b70be618aa8"
+    };
+    
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    // 學生版專屬資料節點 (與教練版完全分開)
+    const DB_STUDENTS = "studentDatabase";
+    const DB_BOOKINGS = "studentBookings";
+    const DB_LOGS = "studentSystemLogs";
+
+    let studentDatabase = {};
+    let studentBookings = {};
+    let systemLogs = [];
+
+    let lineUserName = "";
+    let isAdmin = false; // 老師/管理者
+    let currentCategory = "group"; // group: 團體床(多床), private: 1對1私教
+    let currentStartDate = new Date();
+
+    function startFirebaseListeners() {
+      // 監聽學生帳戶資料
+      db.ref(DB_STUDENTS).on("value", (snapshot) => {
+        studentDatabase = snapshot.val() || {};
+        if (lineUserName) {
+          isAdmin = (lineUserName === "蕭斈健 Hank") || (studentDatabase[lineUserName]?.role === "admin");
+          updateSidebarInfo();
+          checkAdminElementsDisplay();
+        }
+        if (isAdmin) updateAdminDashboard();
+      });
+
+      // 監聽課表預約
+      db.ref(DB_BOOKINGS).on("value", (snapshot) => {
+        studentBookings = snapshot.val() || {};
+        renderCalendar();
+      });
+
+      // 監聽日誌
+      db.ref(DB_LOGS).on("value", (snapshot) => {
+        systemLogs = snapshot.val() || [];
+        if (isAdmin) updateAdminDashboard();
+      });
+    }
+
+    function addSystemLog(msg) {
+      const now = new Date();
+      const timeStr = `${now.getFullYear()}/${(now.getMonth()+1).toString().padStart(2,'0')}/${now.getDate().toString().padStart(2,'0')} ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+      const updatedLogs = [`[${timeStr}] ${msg}`, ...systemLogs];
+      db.ref(DB_LOGS).set(updatedLogs);
+    }
+
+    document.addEventListener("DOMContentLoaded", function() {
+      document.getElementById("calendar-date-input").value = currentStartDate.toISOString().split('T')[0];
+      startFirebaseListeners();
+
+      // 請填入您為學生版申請的 LINE LIFF ID (可先填寫與原專案相同測試)
+      liff.init({ liffId: "2010786850-r8HyiT5u" })
+      .then(() => {
+        if (!liff.isLoggedIn()) {
+          liff.login();
+        } else {
+          liff.getProfile().then(profile => {
+            lineUserName = profile.displayName ? profile.displayName.trim() : "訪客學員";
+            
+            db.ref(`${DB_STUDENTS}/${lineUserName}`).get().then((snapshot) => {
+              if (!snapshot.exists()) {
+                db.ref(`${DB_STUDENTS}/${lineUserName}`).set({
+                  points: 0,
+                  history: [],
+                  role: lineUserName === "蕭斈健 Hank" ? "admin" : "user"
+                });
+              }
+            });
+
+            updateSidebarInfo();
+            checkAdminElementsDisplay();
+            renderCalendar();
+          });
+        }
+      }).catch(err => console.error(err));
+    });
+
+    function updateSidebarInfo() {
+      if (!studentDatabase[lineUserName]) {
+        studentDatabase[lineUserName] = { points: 0, history: [], role: "user" };
+      }
+      document.getElementById("sidebar-name").innerText = lineUserName;
+      document.getElementById("sidebar-points").innerText = (studentDatabase[lineUserName].points || 0) + " 堂";
+    }
+
+    function checkAdminElementsDisplay() {
+      const adminNavBtn = document.getElementById("btn-nav-manage");
+      if (isAdmin) {
+        document.getElementById("admin-status").innerText = "身份：老師 / 課堂管理者";
+        document.getElementById("admin-status").style.color = "#f59e0b";
+        if(adminNavBtn) adminNavBtn.style.display = "inline-block";
+      } else {
+        document.getElementById("admin-status").innerText = "身份：學員";
+        document.getElementById("admin-status").style.color = "#6b7280";
+        if(adminNavBtn) adminNavBtn.style.display = "none";
+      }
+    }
+
+    function switchCategory(cat) {
+      currentCategory = cat;
+      document.getElementById("btn-cat-group").className = cat === 'group' ? 'room-btn active' : 'room-btn';
+      document.getElementById("btn-cat-private").className = cat === 'private' ? 'room-btn active' : 'room-btn';
+      renderCalendar();
+    }
+
+    function getWeekDays(startDate) {
+      const daysArr = [];
+      const weekNames = ['日', '一', '二', '三', '四', '五', '六'];
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(startDate);
+        d.setDate(startDate.getDate() + i);
+        daysArr.push({
+          displayTh: `${d.getMonth() + 1}/${d.getDate()} (${weekNames[d.getDay()]})`,
+          dbKey: `${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')}`
+        });
+      }
+      return daysArr;
+    }
+
+    function renderCalendar() {
+      const weekDays = getWeekDays(currentStartDate);
+      const theadRow = document.getElementById("calendar-th-row");
+      if (theadRow) {
+        let thHtml = '<th style="width: 90px;">時間</th>';
+        weekDays.forEach(day => { thHtml += `<th>${day.displayTh}</th>`; });
+        theadRow.innerHTML = thHtml;
+      }
+
+      const tbody = document.getElementById("calendar-body");
+      if(!tbody) return;
+
+      const maxCapacity = currentCategory === "group" ? 4 : 1; // 團體課最多4人，1對1私教最多1人
+      let htmlCode = '';
+
+      for(let h = 8; h <= 20; h++) {
+        let timeStr = `${h.toString().padStart(2, '0')}:00`;
+        htmlCode += `<tr><td class="time-col">${timeStr}</td>`;
+
+        weekDays.forEach(day => {
+          const slotKey = `${currentCategory}_${day.dbKey}_${h}`;
+          const bookedList = studentBookings[slotKey] || [];
+          const isUserBooked = bookedList.some(b => b.name === lineUserName);
+          const currentCount = bookedList.length;
+
+          let cellClass = "available-slot";
+          let cellText = `可預約 (${currentCount}/${maxCapacity})`;
+
+          if (isUserBooked) {
+            cellClass = "user-booked";
+            cellText = `已預約 (${currentCount}/${maxCapacity})`;
+          } else if (currentCount >= maxCapacity) {
+            cellClass = "full-slot";
+            cellText = "已額滿";
+          }
+
+          htmlCode += `<td class="${cellClass}" onclick="handleSlotClick('${slotKey}', '${day.dbKey}', ${h}, '${timeStr}', ${maxCapacity})">${cellText}</td>`;
+        });
+        htmlCode += `</tr>`;
+      }
+      tbody.innerHTML = htmlCode;
+    }
+
+    function handleSlotClick(slotKey, dateKey, hour, timeStr, maxCapacity) {
+      let bookedList = studentBookings[slotKey] || [];
+      const isUserBooked = bookedList.some(b => b.name === lineUserName);
+      const categoryName = currentCategory === "group" ? "團體床課程" : "1對1 私教課";
+
+      // === 老師 (管理者) 代訂與取消邏輯 ===
+      if (isAdmin) {
+        let action = prompt(`【老師管理時段】\n課程：${categoryName}\n時段：${dateKey} ${timeStr}\n目前預約人數：${bookedList.length}/${maxCapacity}\n名單：${bookedList.map(b=>b.name).join(', ') || '無'}\n\n請選擇操作：\n[1] 手動幫學生報名代訂\n[2] 清空此時段所有人並退點\n[3] 關閉此時段`);
+        
+        if (action === "1") {
+          let studentName = prompt("請輸入要代訂的學員 LINE 名稱：");
+          if (studentName) {
+            bookedList.push({ name: studentName, time: Date.now() });
+            db.ref(`${DB_BOOKINGS}/${slotKey}`).set(bookedList);
+            db.ref(`${DB_STUDENTS}/${studentName}/points`).transaction(p => (p || 0) - 1);
+            addSystemLog(`老師為學員 [${studentName}] 手動代訂 ${categoryName} (${dateKey} ${timeStr})`);
+            alert("已成功代訂並扣除 1 堂點數！");
+          }
+        } else if (action === "2") {
+          if (confirm("確定要清空並退還所有人 1 堂點數嗎？")) {
+            bookedList.forEach(b => {
+              db.ref(`${DB_STUDENTS}/${b.name}/points`).transaction(p => (p || 0) + 1);
+            });
+            db.ref(`${DB_BOOKINGS}/${slotKey}`).remove();
+            addSystemLog(`老師清空了 ${categoryName} (${dateKey} ${timeStr}) 的預約並完成全額退點`);
+            alert("已清空並完成退點！");
+          }
+        }
+        return;
+      }
+
+      // === 學員預約 / 取消邏輯 ===
+      if (isUserBooked) {
+        if (confirm(`【取消預約】\n您已預約：${categoryName}\n時段：${dateKey} ${timeStr}\n\n是否確定取消？(將自動退回 1 堂課堂數)`)) {
+          bookedList = bookedList.filter(b => b.name !== lineUserName);
+          db.ref(`${DB_BOOKINGS}/${slotKey}`).set(bookedList);
+          db.ref(`${DB_STUDENTS}/${lineUserName}/points`).transaction(p => (p || 0) + 1);
+          addSystemLog(`學員 [${lineUserName}] 取消了 ${categoryName} (${dateKey} ${timeStr})，退還 1 堂`);
+          alert("預約已取消，課堂點數已退回帳戶！");
+        }
+        return;
+      }
+
+      if (bookedList.length >= maxCapacity) {
+        alert("非常抱歉，該時段課程名額已滿！");
+        return;
+      }
+
+      const userPoints = studentDatabase[lineUserName]?.points || 0;
+      if (userPoints <= 0) {
+        alert("【預約失敗】您的剩餘課堂點數不足！請聯繫老師辦理儲值。");
+        return;
+      }
+
+      if (confirm(`【確認預約課程】\n課程類型：${categoryName}\n預約時段：${dateKey} ${timeStr}\n\n系統將自動扣除 1 堂課堂數，是否確認送出？`)) {
+        bookedList.push({ name: lineUserName, time: Date.now() });
+        db.ref(`${DB_BOOKINGS}/${slotKey}`).set(bookedList);
+        db.ref(`${DB_STUDENTS}/${lineUserName}/points`).transaction(p => (p || 0) - 1);
+        addSystemLog(`學員 [${lineUserName}] 成功預約了 ${categoryName} (${dateKey} ${timeStr})，扣除 1 堂`);
+        alert("預約成功！期待您的到課！");
+      }
+    }
+
+    // === 老師管理後台：學生點數儲值與管理 ===
+    function updateAdminDashboard() {
+      const container = document.getElementById("admin-student-list");
+      if(!container) return;
+      let html = '';
+
+      for(let sName in studentDatabase) {
+        const pts = studentDatabase[sName].points || 0;
+        html += `
+          <tr>
+            <td style="color:#fff; font-weight:bold; text-align:left; padding-left:15px;">${sName}</td>
+            <td style="color:#10b981; font-weight:bold;">${pts} 堂</td>
+            <td>
+              <button style="padding:4px 8px; font-size:11px;" onclick="addStudentPoints('${sName}')">➕ 儲值堂數</button>
+            </td>
+          </tr>
+        `;
+      }
+      container.innerHTML = html || '<tr><td colspan="3">尚無學員資料</td></tr>';
+
+      const logBox = document.getElementById("admin-log-box");
+      if(logBox) {
+        logBox.innerHTML = systemLogs.map(l => `<div style="border-bottom:1px solid #374151; padding:4px 0;">${l}</div>`).join('');
+      }
+    }
+
+    function addStudentPoints(sName) {
+      const currentPts = studentDatabase[sName]?.points || 0;
+      const addStr = prompt(`【學員點數儲值 - ${sName}】\n目前剩餘：${currentPts} 堂\n\n請輸入欲增加或調整的堂數 (例如輸入 10 增加 10 堂)：`, "10");
+      if(addStr !== null) {
+        const val = parseInt(addStr);
+        if(!isNaN(val)) {
+          const newPts = currentPts + val;
+          db.ref(`${DB_STUDENTS}/${sName}/points`).set(newPts);
+          addSystemLog(`老師為學員 [${sName}] 辦理儲值/調整 ${val} 堂 (現有總堂數：${newPts} 堂)`);
+          alert(`已成功更新 ${sName} 的課堂點數為 ${newPts} 堂！`);
+        }
+      }
+    }
+
+    function toggleSidebar() { document.getElementById("sidebar").classList.toggle("open"); }
+    function switchPage(p) {
+      document.getElementById("calendar-page").style.display = p === 'cal' ? 'block' : 'none';
+      document.getElementById("admin-page").style.display = p === 'manage' ? 'block' : 'none';
+    }
+  </script>
+
+  <style>
+    body { font-family: -apple-system, sans-serif; background: #111827; color: #e5e7eb; margin: 0; padding: 0; display: flex; flex-direction: column; align-items: center; }
+    .navbar { width: 100%; max-width: 1000px; display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; box-sizing: border-box; background: #1f2937; border-bottom: 1px solid #374151; position: sticky; top: 0; z-index: 40; }
+    .page-container { max-width: 1000px; width: 95%; background: #1f2937; border: 1px solid #374151; border-radius: 16px; padding: 30px; box-sizing: border-box; margin-top: 20px; margin-bottom: 60px; }
+    .sidebar { position: fixed; top: 0; right: -320px; width: 300px; height: 100%; background: #1f2937; border-left: 1px solid #374151; padding: 40px 24px; transition: right 0.3s; z-index: 1000; box-sizing: border-box; }
+    .sidebar.open { right: 0; }
+    .room-selector { display: flex; gap: 10px; margin-bottom: 25px; background: #111827; padding: 8px; border-radius: 12px; }
+    .room-btn { background: transparent; border: none; padding: 10px 20px; color: #9ca3af; font-size: 14px; font-weight: bold; cursor: pointer; border-radius: 8px; }
+    .room-btn.active { background: #10b981; color: #111827; }
+    table { width: 100%; border-collapse: separate; border-spacing: 0; background: #111827; border: 1px solid #374151; border-radius: 12px; overflow: hidden; }
+    th, td { border-bottom: 1px solid #374151; border-right: 1px solid #374151; text-align: center; font-size: 13px; height: 48px; color: #d1d5db; padding: 4px; }
+    th { background: #1f2937; color: #10b981; }
+    .available-slot { cursor: pointer; color: #34d399; font-weight: 600; }
+    .available-slot:hover { background: #374151; }
+    .user-booked { background: #064e3b !important; color: #a7f3d0 !important; cursor: pointer; font-weight: bold; }
+    .full-slot { background: #312e81; color: #818cf8 !important; cursor: not-allowed; }
+    button { background: #374151; border: 1px solid #4b5563; border-radius: 8px; padding: 8px 16px; color: #fff; cursor: pointer; }
+  </style>
+</head>
+<body>
+
+  <div class="navbar">
+    <div style="display:flex; gap:10px;">
+      <button onclick="switchPage('cal')">📅 課程表預約</button>
+      <button id="btn-nav-manage" style="display:none; background:#f59e0b; color:#111827; font-weight:bold;" onclick="switchPage('manage')">👥 老師學生管理後台</button>
+    </div>
+    <button onclick="toggleSidebar()">👤 個人課堂點數</button>
+  </div>
+
+  <div id="sidebar" class="sidebar">
+    <span style="cursor:pointer; color:#9ca3af;" onclick="toggleSidebar()">【關閉】</span>
+    <h3>學員資訊</h3>
+    <div style="border:1px solid #374151; padding:15px; border-radius:8px; background:#111827; line-height:2;">
+      <div>學員姓名：<span id="sidebar-name" style="color:#fff; font-weight:bold;">--</span></div>
+      <div>剩餘堂數：<span id="sidebar-points" style="color:#10b981; font-weight:bold;">-- 堂</span></div>
+    </div>
+    <p id="admin-status" style="margin-top:20px; font-size:12px; color:#6b7280;">身份：學員</p>
+  </div>
+
+  <div class="page-container">
+    
+    <!-- 課表頁面 -->
+    <div id="calendar-page">
+      <h2>學員預約與課堂扣點系統</h2>
+      
+      <div class="room-selector">
+        <button id="btn-cat-group" class="room-btn active" onclick="switchCategory('group')">🧘‍♀️ 團體床課程 (最多4人)</button>
+        <button id="btn-cat-private" class="room-btn" onclick="switchCategory('private')">👤 1對1 私教課 (專屬預約)</button>
+        <input type="date" id="calendar-date-input" style="margin-left:auto; background:#1f2937; border:1px solid #374151; color:#10b981; padding:6px; border-radius:6px;" onchange="currentStartDate = new Date(this.value); renderCalendar();">
+      </div>
+
+      <table>
+        <thead><tr id="calendar-th-row"></tr></thead>
+        <tbody id="calendar-body"></tbody>
+      </table>
+    </div>
+
+    <!-- 老師管理頁面 -->
+    <div id="admin-page" style="display:none;">
+      <h2>👥 老師後台：學員點數與開課管理</h2>
+      
+      <div style="border:1px solid #374151; border-radius:12px; padding:20px; background:#111827; margin-top:20px;">
+        <h3>全體學員課堂點數名單</h3>
+        <table style="margin-top:10px;">
+          <thead>
+            <tr>
+              <th style="text-align:left; padding-left:15px;">學員 LINE 名稱</th>
+              <th>目前剩餘堂數</th>
+              <th>手動儲值/調整</th>
+            </tr>
+          </thead>
+          <tbody id="admin-student-list"></tbody>
+        </table>
+      </div>
+
+      <div style="border:1px solid #374151; border-radius:12px; padding:20px; background:#111827; margin-top:20px;">
+        <h3>系統操作日誌</h3>
+        <div id="admin-log-box" style="max-height:180px; overflow-y:auto; font-size:12px; font-family:monospace; color:#9ca3af;"></div>
+      </div>
+    </div>
+
+  </div>
+
+</body>
+</html>
