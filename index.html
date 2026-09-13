@@ -52,7 +52,6 @@
         }
 
         document.getElementById("teacher-title-display").innerText = `${teacherInfo.name || "教練"} - 學員預約系統`;
-        
         if (teacherInfo.mode) currentCategory = teacherInfo.mode;
         updateModeButtons();
         updateDeductToggleUI();
@@ -194,7 +193,6 @@
 
       let htmlCode = '';
 
-      // 時間範圍修改為 07:00 ~ 22:00
       for(let h = 7; h <= 22; h++) {
         let timeStr = `${h.toString().padStart(2, '0')}:00`;
         htmlCode += `<tr><td class="time-col">${timeStr}</td>`;
@@ -204,7 +202,7 @@
           const slotData = studentBookings[slotKey] || {};
           
           let bookedList = [];
-          let maxCapacity = 4; // 兩種模式預設上限皆改為 4 人
+          let maxCapacity = 4; 
           let isOpen = false;
 
           if (Array.isArray(slotData)) {
@@ -346,30 +344,44 @@
       }
     }
 
-    // === 批次開課與預約系統 ===
+    // === 新版 GUI 下拉選單 Modal 控制器 ===
     function openBatchModal() {
+      const modal = document.getElementById("batch-modal");
+      const title = document.getElementById("batch-modal-title");
+      const btnContainer = document.getElementById("batch-modal-buttons");
+      const maxRow = document.getElementById("batch-max-row");
+
+      title.innerText = isAdmin ? `⚡ 老師批次開課/關課工具` : `⚡ 學員批次固定時段預約`;
+
+      if (isAdmin) {
+        maxRow.style.display = "flex";
+        btnContainer.innerHTML = `
+          <button style="background:#10b981; color:#111827; font-weight:bold; flex:1;" onclick="submitBatchAction('open')">🟢 一鍵批次開課</button>
+          <button style="background:#ef4444; color:#fff; font-weight:bold; flex:1;" onclick="submitBatchAction('close')">🔴 一鍵批次關課</button>
+        `;
+      } else {
+        maxRow.style.display = "none";
+        btnContainer.innerHTML = `
+          <button style="background:#8b5cf6; color:#fff; font-weight:bold; width:100%;" onclick="submitBatchAction('book')">⚡ 一鍵批次預約固定時段</button>
+        `;
+      }
+
+      modal.style.display = "flex";
+    }
+
+    function closeBatchModal() {
+      document.getElementById("batch-modal").style.display = "none";
+    }
+
+    function submitBatchAction(type) {
+      const targetDay = parseInt(document.getElementById("batch-select-day").value);
+      const targetHour = parseInt(document.getElementById("batch-select-hour").value);
+      const weeksCount = parseInt(document.getElementById("batch-select-weeks").value);
+      const maxVal = parseInt(document.getElementById("batch-select-max").value);
+
       const weekDaysText = ["日", "一", "二", "三", "四", "五", "六"];
-      const dayStr = prompt(`【批次${isAdmin ? '開課/關課' : '預約'}選單】\n請輸入欲批次的星期幾 (數字 0~6，例: 3 代表禮拜三)：`, "3");
-      if (dayStr === null) return;
-      const targetDay = parseInt(dayStr);
-      if (isNaN(targetDay) || targetDay < 0 || targetDay > 6) {
-        alert("輸入無效，請輸入 0~6 的數字！");
-        return;
-      }
 
-      const hourStr = prompt(`請輸入時間整點 (數字 7~22，例: 19 代表 19:00)：`, "19");
-      if (hourStr === null) return;
-      const targetHour = parseInt(hourStr);
-      if (isNaN(targetHour) || targetHour < 7 || targetHour > 22) {
-        alert("輸入無效，時間請在 7~22 之間！");
-        return;
-      }
-
-      const weeksCountStr = prompt(`請輸入欲批次套用的週數 (例如輸入 4 代表連續4週)：`, "4");
-      if (weeksCountStr === null) return;
-      const weeksCount = parseInt(weeksCountStr) || 4;
-
-      // 計算未來幾週目標星期的日期
+      // 計算目標日期
       const datesToApply = [];
       let checkDate = new Date();
       while (datesToApply.length < weeksCount) {
@@ -383,62 +395,57 @@
       }
 
       const categoryName = currentCategory === "pilates" ? "皮拉提斯" : "健身私教";
-      
-      // 老師批次處理邏輯
-      if (isAdmin) {
-        const action = prompt(`將針對【每週${weekDaysText[targetDay]} ${targetHour}:00】共 ${weeksCount} 週進行批次設定：\n[1] 批次開啟預約\n[2] 批次關閉預約`);
-        if (action === "1") {
-          let maxInput = prompt("請設定批次開課的人數上限：", "4");
-          let maxVal = parseInt(maxInput) || 4;
-          datesToApply.forEach(dKey => {
-            const slotKey = `${currentCategory}_${dKey}_${targetHour}`;
-            const existing = studentBookings[slotKey] || {};
-            const bookedList = Array.isArray(existing) ? existing : (existing.booked || []);
-            db.ref(`${DB_BOOKINGS}/${slotKey}`).set({ isOpen: true, max: maxVal, booked: bookedList });
-          });
-          addSystemLog(`老師批次開啟了每週${weekDaysText[targetDay]} ${targetHour}:00 共 ${weeksCount} 堂課程`);
-          alert("批次開課成功！");
-        } else if (action === "2") {
-          datesToApply.forEach(dKey => {
-            const slotKey = `${currentCategory}_${dKey}_${targetHour}`;
-            const existing = studentBookings[slotKey] || {};
-            const bookedList = Array.isArray(existing) ? existing : (existing.booked || []);
-            db.ref(`${DB_BOOKINGS}/${slotKey}`).set({ isOpen: false, max: 4, booked: bookedList });
-          });
-          addSystemLog(`老師批次關閉了每週${weekDaysText[targetDay]} ${targetHour}:00 共 ${weeksCount} 堂課程`);
-          alert("批次關閉成功！");
-        }
-        return;
-      }
 
-      // 學員批次預約邏輯
-      const userPoints = studentDatabase[lineUserName]?.points || 0;
-      if (teacherInfo.deductPoints !== false && userPoints < weeksCount) {
-        alert(`【點數不足】批次預約連續 ${weeksCount} 週需要 ${weeksCount} 堂點數，您目前僅有 ${userPoints} 堂！`);
-        return;
-      }
-
-      if (confirm(`【確認批次預約】\n預約項目：${categoryName}\n時段：每週${weekDaysText[targetDay]} ${targetHour}:00\n共計：${weeksCount} 堂\n${teacherInfo.deductPoints !== false ? `將自動扣除 ${weeksCount} 堂課堂點數` : '是否確認送出預約？'}`)) {
-        let successCount = 0;
+      if (type === 'open') {
         datesToApply.forEach(dKey => {
           const slotKey = `${currentCategory}_${dKey}_${targetHour}`;
           const existing = studentBookings[slotKey] || {};
-          let bookedList = Array.isArray(existing) ? existing : (existing.booked || []);
-          let isOpen = currentCategory === "fitness" ? (existing.isOpen !== false) : (existing.isOpen === true);
-          let maxCapacity = existing.max || 4;
-
-          if (isOpen && bookedList.length < maxCapacity && !bookedList.some(b => b.name === lineUserName)) {
-            bookedList.push({ name: lineUserName, time: Date.now() });
-            db.ref(`${DB_BOOKINGS}/${slotKey}`).set({ isOpen: true, max: maxCapacity, booked: bookedList });
-            successCount++;
-          }
+          const bookedList = Array.isArray(existing) ? existing : (existing.booked || []);
+          db.ref(`${DB_BOOKINGS}/${slotKey}`).set({ isOpen: true, max: maxVal, booked: bookedList });
         });
-
-        if (successCount > 0 && teacherInfo.deductPoints !== false) {
-          db.ref(`${DB_STUDENTS}/${lineUserName}/points`).transaction(p => (p || 0) - successCount);
+        addSystemLog(`老師批次開啟了每週${weekDaysText[targetDay]} ${targetHour}:00 共 ${weeksCount} 堂課程`);
+        alert(`已成功批次開啟每週 ${weekDaysText[targetDay]} ${targetHour}:00 連續 ${weeksCount} 週的課程！`);
+        closeBatchModal();
+      } else if (type === 'close') {
+        datesToApply.forEach(dKey => {
+          const slotKey = `${currentCategory}_${dKey}_${targetHour}`;
+          const existing = studentBookings[slotKey] || {};
+          const bookedList = Array.isArray(existing) ? existing : (existing.booked || []);
+          db.ref(`${DB_BOOKINGS}/${slotKey}`).set({ isOpen: false, max: maxVal, booked: bookedList });
+        });
+        addSystemLog(`老師批次關閉了每週${weekDaysText[targetDay]} ${targetHour}:00 共 ${weeksCount} 堂課程`);
+        alert(`已成功關閉每週 ${weekDaysText[targetDay]} ${targetHour}:00 連續 ${weeksCount} 週的課程！`);
+        closeBatchModal();
+      } else if (type === 'book') {
+        const userPoints = studentDatabase[lineUserName]?.points || 0;
+        if (teacherInfo.deductPoints !== false && userPoints < weeksCount) {
+          alert(`【點數不足】批次預約連續 ${weeksCount} 週需要 ${weeksCount} 堂點數，您目前僅有 ${userPoints} 堂！`);
+          return;
         }
-        addSystemLog(`學員 [${lineUserName}] 批次預約每週${weekDaysText[targetDay]} ${targetHour}:00 成功預約 ${successCount} 堂`);
-        alert(`批次預約完成！成功預約 ${successCount} 堂課程！`);
+
+        if (confirm(`【確認批次預約】\n預約課程：${categoryName}\n固定時段：每週 ${weekDaysText[targetDay]} ${targetHour}:00\n連續週數：${weeksCount} 週\n\n${teacherInfo.deductPoints !== false ? `將自動扣除 ${weeksCount} 堂點數` : '是否確認送出預約？'}`)) {
+          let successCount = 0;
+          datesToApply.forEach(dKey => {
+            const slotKey = `${currentCategory}_${dKey}_${targetHour}`;
+            const existing = studentBookings[slotKey] || {};
+            let bookedList = Array.isArray(existing) ? existing : (existing.booked || []);
+            let isOpen = currentCategory === "fitness" ? (existing.isOpen !== false) : (existing.isOpen === true);
+            let maxCapacity = existing.max || 4;
+
+            if (isOpen && bookedList.length < maxCapacity && !bookedList.some(b => b.name === lineUserName)) {
+              bookedList.push({ name: lineUserName, time: Date.now() });
+              db.ref(`${DB_BOOKINGS}/${slotKey}`).set({ isOpen: true, max: maxCapacity, booked: bookedList });
+              successCount++;
+            }
+          });
+
+          if (successCount > 0 && teacherInfo.deductPoints !== false) {
+            db.ref(`${DB_STUDENTS}/${lineUserName}/points`).transaction(p => (p || 0) - successCount);
+          }
+          addSystemLog(`學員 [${lineUserName}] 批次預約每週${weekDaysText[targetDay]} ${targetHour}:00 成功預約 ${successCount} 堂`);
+          alert(`🎉 批次預約完成！已成功為您預約 ${successCount} 堂課程！`);
+          closeBatchModal();
+        }
       }
     }
 
@@ -507,6 +514,13 @@
     .user-booked { background: #064e3b !important; color: #a7f3d0 !important; cursor: pointer; font-weight: bold; }
     .full-slot { background: #312e81; color: #818cf8 !important; cursor: not-allowed; }
     button { background: #374151; border: 1px solid #4b5563; border-radius: 8px; padding: 8px 16px; color: #fff; cursor: pointer; }
+
+    /* Modal 彈出視窗樣式 */
+    .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.75); display: flex; justify-content: center; align-items: center; z-index: 2000; }
+    .modal-card { background: #1f2937; border: 1px solid #374151; border-radius: 16px; padding: 25px; width: 90%; max-width: 450px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+    .modal-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    .modal-row label { font-size: 14px; font-weight: bold; color: #d1d5db; }
+    .modal-row select { background: #111827; border: 1px solid #374151; color: #10b981; padding: 8px 12px; border-radius: 8px; font-size: 14px; outline: none; width: 60%; }
   </style>
 </head>
 <body>
@@ -575,6 +589,73 @@
         <h3>系統操作日誌</h3>
         <div id="admin-log-box" style="max-height:180px; overflow-y:auto; font-size:12px; font-family:monospace; color:#9ca3af;"></div>
       </div>
+    </div>
+  </div>
+
+  <!-- 批次 Modal 視窗 -->
+  <div id="batch-modal" class="modal-overlay" style="display:none;">
+    <div class="modal-card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+        <h3 id="batch-modal-title" style="margin:0; color:#10b981;">⚡ 批次開課/預約選單</h3>
+        <span style="cursor:pointer; color:#9ca3af; font-size:20px;" onclick="closeBatchModal()">✖</span>
+      </div>
+
+      <div class="modal-row">
+        <label>選擇固定星期：</label>
+        <select id="batch-select-day">
+          <option value="1">每週一</option>
+          <option value="2">每週二</option>
+          <option value="3" selected>每週三</option>
+          <option value="4">每週四</option>
+          <option value="5">每週五</option>
+          <option value="6">每週六</option>
+          <option value="0">每週日</option>
+        </select>
+      </div>
+
+      <div class="modal-row">
+        <label>選擇上課整點：</label>
+        <select id="batch-select-hour">
+          <option value="7">07:00</option>
+          <option value="8">08:00</option>
+          <option value="9">09:00</option>
+          <option value="10">10:00</option>
+          <option value="11">11:00</option>
+          <option value="12">12:00</option>
+          <option value="13">13:00</option>
+          <option value="14">14:00</option>
+          <option value="15">15:00</option>
+          <option value="16">16:00</option>
+          <option value="17">17:00</option>
+          <option value="18">18:00</option>
+          <option value="19" selected>19:00</option>
+          <option value="20">20:00</option>
+          <option value="21">21:00</option>
+          <option value="22">22:00</option>
+        </select>
+      </div>
+
+      <div class="modal-row">
+        <label>批次套用週數：</label>
+        <select id="batch-select-weeks">
+          <option value="2">連續 2 週</option>
+          <option value="4" selected>連續 4 週 (1個月)</option>
+          <option value="8">連續 8 週 (2個月)</option>
+          <option value="12">連續 12 週 (3個月)</option>
+        </select>
+      </div>
+
+      <div class="modal-row" id="batch-max-row" style="display:none;">
+        <label>開課人數上限：</label>
+        <select id="batch-select-max">
+          <option value="1">1 人 (1對1專屬)</option>
+          <option value="2">2 人</option>
+          <option value="4" selected>4 人 (精緻小班)</option>
+          <option value="6">6 人</option>
+        </select>
+      </div>
+
+      <div id="batch-modal-buttons" style="display:flex; gap:10px; margin-top:25px;"></div>
     </div>
   </div>
 
