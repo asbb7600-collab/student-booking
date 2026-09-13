@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>學員預約與課堂扣點系統</title>
+  <title>學員預約系統</title>
   
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
@@ -23,38 +23,42 @@
     firebase.initializeApp(firebaseConfig);
     const db = firebase.database();
 
-    // 抓取網址上的 ?teacher=xxx 參數，預設為 hank
     const urlParams = new URLSearchParams(window.location.search);
     const currentTeacherId = urlParams.get('teacher') || 'hank';
 
-    // 依教練 ID 動態隔離 Firebase 資料節點
     const DB_TEACHER_INFO = `teachers/${currentTeacherId}/info`;
     const DB_STUDENTS = `teachers/${currentTeacherId}/students`;
     const DB_BOOKINGS = `teachers/${currentTeacherId}/bookings`;
     const DB_LOGS = `teachers/${currentTeacherId}/logs`;
 
-    let teacherInfo = {};
+    let teacherInfo = { name: "教練", mode: "pilates", deductPoints: true, status: "active" };
     let studentDatabase = {};
     let studentBookings = {};
     let systemLogs = [];
 
     let lineUserName = "";
     let isAdmin = false; 
-    let currentCategory = "group"; 
+    let currentCategory = "pilates"; // pilates: 皮拉提斯(開課制), fitness: 健身私教(自由預約)
     let currentStartDate = new Date();
 
     function startFirebaseListeners() {
-      // 監聽教練權限狀態
       db.ref(DB_TEACHER_INFO).on("value", (snapshot) => {
-        teacherInfo = snapshot.val() || { name: "教練", status: "active" };
-        document.getElementById("teacher-title-display").innerText = `${teacherInfo.name || "教練"} - 學員預約系統`;
+        const val = snapshot.val();
+        if (val) teacherInfo = val;
         
         if (teacherInfo.status === "suspended") {
-          document.body.innerHTML = `<div style="color:#fff; text-align:center; padding-top:100px; font-size:18px;">⚠️ 該教練服務已到期或暫停使用，請聯繫管理員續費。</div>`;
+          document.body.innerHTML = `<div style="color:#fff; text-align:center; padding-top:100px; font-size:18px;">⚠️ 該教練服務已到期或暫停使用，請聯繫管理員。</div>`;
+          return;
         }
+
+        document.getElementById("teacher-title-display").innerText = `${teacherInfo.name || "教練"} - 學員預約系統`;
+        
+        // 套用老師預設設定
+        if (teacherInfo.mode) currentCategory = teacherInfo.mode;
+        updateModeButtons();
+        updateDeductToggleUI();
       });
 
-      // 監聽學生資料
       db.ref(DB_STUDENTS).on("value", (snapshot) => {
         studentDatabase = snapshot.val() || {};
         if (lineUserName) {
@@ -65,13 +69,11 @@
         if (isAdmin) updateAdminDashboard();
       });
 
-      // 監聽預約
       db.ref(DB_BOOKINGS).on("value", (snapshot) => {
         studentBookings = snapshot.val() || {};
         renderCalendar();
       });
 
-      // 監聽日誌
       db.ref(DB_LOGS).on("value", (snapshot) => {
         systemLogs = snapshot.val() || [];
         if (isAdmin) updateAdminDashboard();
@@ -138,9 +140,30 @@
 
     function switchCategory(cat) {
       currentCategory = cat;
-      document.getElementById("btn-cat-group").className = cat === 'group' ? 'room-btn active' : 'room-btn';
-      document.getElementById("btn-cat-private").className = cat === 'private' ? 'room-btn active' : 'room-btn';
+      updateModeButtons();
       renderCalendar();
+    }
+
+    function updateModeButtons() {
+      const btnP = document.getElementById("btn-cat-pilates");
+      const btnF = document.getElementById("btn-cat-fitness");
+      if (btnP) btnP.className = currentCategory === 'pilates' ? 'room-btn active' : 'room-btn';
+      if (btnF) btnF.className = currentCategory === 'fitness' ? 'room-btn active' : 'room-btn';
+    }
+
+    function updateDeductToggleUI() {
+      const toggleBtn = document.getElementById("toggle-deduct-btn");
+      if (toggleBtn) {
+        toggleBtn.innerText = teacherInfo.deductPoints !== false ? "🟢 點數扣堂：已開啟" : "⚪ 免扣點預約：已開啟";
+        toggleBtn.style.background = teacherInfo.deductPoints !== false ? "#10b981" : "#6b7280";
+      }
+    }
+
+    function toggleDeductMode() {
+      if (!isAdmin) return;
+      const nextState = teacherInfo.deductPoints === false ? true : false;
+      db.ref(`${DB_TEACHER_INFO}/deductPoints`).set(nextState);
+      addSystemLog(`老師將【預約扣點機制】切換為：${nextState ? '開啟扣堂' : '免扣點自由預約'}`);
     }
 
     function getWeekDays(startDate) {
@@ -169,7 +192,6 @@
       const tbody = document.getElementById("calendar-body");
       if(!tbody) return;
 
-      const maxCapacity = currentCategory === "group" ? 4 : 1; 
       let htmlCode = '';
 
       for(let h = 8; h <= 20; h++) {
@@ -178,85 +200,149 @@
 
         weekDays.forEach(day => {
           const slotKey = `${currentCategory}_${day.dbKey}_${h}`;
-          const bookedList = studentBookings[slotKey] || [];
+          const slotData = studentBookings[slotKey] || {};
+          
+          let bookedList = [];
+          let maxCapacity = 1;
+          let isOpen = false;
+
+          if (Array.isArray(slotData)) {
+            bookedList = slotData;
+            isOpen = true;
+            maxCapacity = currentCategory === "pilates" ? 4 : 1;
+          } else {
+            bookedList = slotData.booked || [];
+            maxCapacity = slotData.max || (currentCategory === "pilates" ? 4 : 1);
+            isOpen = currentCategory === "fitness" ? (slotData.isOpen !== false) : (slotData.isOpen === true);
+          }
+
           const isUserBooked = bookedList.some(b => b.name === lineUserName);
           const currentCount = bookedList.length;
 
           let cellClass = "available-slot";
-          let cellText = `可預約 (${currentCount}/${maxCapacity})`;
+          let cellText = "";
 
-          if (isUserBooked) {
+          if (!isOpen) {
+            cellClass = "closed-slot";
+            cellText = isAdmin ? "未開課 (點擊設置)" : "未開放";
+          } else if (isUserBooked) {
             cellClass = "user-booked";
             cellText = `已預約 (${currentCount}/${maxCapacity})`;
           } else if (currentCount >= maxCapacity) {
             cellClass = "full-slot";
             cellText = "已額滿";
+          } else {
+            cellClass = "available-slot";
+            cellText = `可預約 (${currentCount}/${maxCapacity})`;
           }
 
-          htmlCode += `<td class="${cellClass}" onclick="handleSlotClick('${slotKey}', '${day.dbKey}', ${h}, '${timeStr}', ${maxCapacity})">${cellText}</td>`;
+          htmlCode += `<td class="${cellClass}" onclick="handleSlotClick('${slotKey}', '${day.dbKey}', ${h}, '${timeStr}', ${maxCapacity}, ${isOpen})">${cellText}</td>`;
         });
         htmlCode += `</tr>`;
       }
       tbody.innerHTML = htmlCode;
     }
 
-    function handleSlotClick(slotKey, dateKey, hour, timeStr, maxCapacity) {
-      let bookedList = studentBookings[slotKey] || [];
-      const isUserBooked = bookedList.some(b => b.name === lineUserName);
-      const categoryName = currentCategory === "group" ? "團體床課程" : "1對1 私教課";
+    function handleSlotClick(slotKey, dateKey, hour, timeStr, defaultMax, isOpen) {
+      const rawData = studentBookings[slotKey] || {};
+      let bookedList = Array.isArray(rawData) ? rawData : (rawData.booked || []);
+      let maxCapacity = rawData.max || defaultMax;
 
+      const categoryName = currentCategory === "pilates" ? "皮拉提斯課程" : "健身私教課";
+      const isUserBooked = bookedList.some(b => b.name === lineUserName);
+
+      // === 老師 (管理者) 操作邏輯 ===
       if (isAdmin) {
-        let action = prompt(`【老師管理時段】\n課程：${categoryName}\n時段：${dateKey} ${timeStr}\n目前預約人數：${bookedList.length}/${maxCapacity}\n名單：${bookedList.map(b=>b.name).join(', ') || '無'}\n\n請選擇操作：\n[1] 手動幫學生報名代訂\n[2] 清空此時段所有人並退點\n[3] 關閉此時段`);
-        
+        let action = prompt(
+          `【老師管理時段】\n模式：${categoryName}\n時段：${dateKey} ${timeStr}\n目前狀態：${isOpen ? '開放中' : '關閉/未開課'}\n人數：${bookedList.length}/${maxCapacity}\n名單：${bookedList.map(b=>b.name).join(', ') || '無'}\n\n` +
+          `請選擇操作：\n` +
+          `[1] ${isOpen ? '關閉此時段' : '開啟此時段預約'}\n` +
+          `[2] 手動幫學生報名代訂\n` +
+          `[3] 清空所有人 (可退點)`
+        );
+
         if (action === "1") {
+          let newOpenState = !isOpen;
+          let newMax = maxCapacity;
+          if (newOpenState && currentCategory === "pilates") {
+            let inputMax = prompt("請設定此皮拉提斯課程開課人數上限：", "4");
+            if (inputMax) newMax = parseInt(inputMax) || 4;
+          }
+          db.ref(`${DB_BOOKINGS}/${slotKey}`).set({
+            isOpen: newOpenState,
+            max: newMax,
+            booked: bookedList
+          });
+          addSystemLog(`老師將 ${categoryName} (${dateKey} ${timeStr}) 設定為 ${newOpenState ? '開放' : '關閉'}`);
+        } else if (action === "2") {
           let studentName = prompt("請輸入要代訂的學員 LINE 名稱：");
           if (studentName) {
             bookedList.push({ name: studentName, time: Date.now() });
-            db.ref(`${DB_BOOKINGS}/${slotKey}`).set(bookedList);
-            db.ref(`${DB_STUDENTS}/${studentName}/points`).transaction(p => (p || 0) - 1);
-            addSystemLog(`老師為學員 [${studentName}] 手動代訂 ${categoryName} (${dateKey} ${timeStr})`);
-            alert("已成功代訂並扣除 1 堂點數！");
+            db.ref(`${DB_BOOKINGS}/${slotKey}`).set({ isOpen: true, max: maxCapacity, booked: bookedList });
+            if (teacherInfo.deductPoints !== false) {
+              db.ref(`${DB_STUDENTS}/${studentName}/points`).transaction(p => (p || 0) - 1);
+            }
+            addSystemLog(`老師為 [${studentName}] 代訂 ${categoryName} (${dateKey} ${timeStr})`);
+            alert("代訂成功！");
           }
-        } else if (action === "2") {
-          if (confirm("確定要清空並退還所有人 1 堂點數嗎？")) {
-            bookedList.forEach(b => {
-              db.ref(`${DB_STUDENTS}/${b.name}/points`).transaction(p => (p || 0) + 1);
-            });
+        } else if (action === "3") {
+          if (confirm("確定要清空所有人嗎？")) {
+            if (teacherInfo.deductPoints !== false) {
+              bookedList.forEach(b => {
+                db.ref(`${DB_STUDENTS}/${b.name}/points`).transaction(p => (p || 0) + 1);
+              });
+            }
             db.ref(`${DB_BOOKINGS}/${slotKey}`).remove();
-            addSystemLog(`老師清空了 ${categoryName} (${dateKey} ${timeStr}) 的預約並完成全額退點`);
-            alert("已清空並完成退點！");
+            addSystemLog(`老師清空了 ${categoryName} (${dateKey} ${timeStr}) 的名單`);
+            alert("已成功清空！");
           }
         }
         return;
       }
 
+      // === 學員預約 / 取消邏輯 ===
+      if (!isOpen) {
+        alert("該時段目前未開放預約，請選擇其他時段！");
+        return;
+      }
+
       if (isUserBooked) {
-        if (confirm(`【取消預約】\n您已預約：${categoryName}\n時段：${dateKey} ${timeStr}\n\n是否確定取消？(將自動退回 1 堂課堂數)`)) {
+        if (confirm(`【取消預約】\n您已預約：${categoryName}\n時段：${dateKey} ${timeStr}\n\n是否確定取消？`)) {
           bookedList = bookedList.filter(b => b.name !== lineUserName);
-          db.ref(`${DB_BOOKINGS}/${slotKey}`).set(bookedList);
-          db.ref(`${DB_STUDENTS}/${lineUserName}/points`).transaction(p => (p || 0) + 1);
-          addSystemLog(`學員 [${lineUserName}] 取消了 ${categoryName} (${dateKey} ${timeStr})，退還 1 堂`);
-          alert("預約已取消，課堂點數已退回帳戶！");
+          db.ref(`${DB_BOOKINGS}/${slotKey}`).set({ isOpen: true, max: maxCapacity, booked: bookedList });
+          
+          if (teacherInfo.deductPoints !== false) {
+            db.ref(`${DB_STUDENTS}/${lineUserName}/points`).transaction(p => (p || 0) + 1);
+          }
+          addSystemLog(`學員 [${lineUserName}] 取消了 ${categoryName} (${dateKey} ${timeStr})`);
+          alert("預約已取消！");
         }
         return;
       }
 
       if (bookedList.length >= maxCapacity) {
-        alert("非常抱歉，該時段課程名額已滿！");
+        alert("非常抱歉，該時段名額已滿！");
         return;
       }
 
       const userPoints = studentDatabase[lineUserName]?.points || 0;
-      if (userPoints <= 0) {
+      if (teacherInfo.deductPoints !== false && userPoints <= 0) {
         alert("【預約失敗】您的剩餘課堂點數不足！請聯繫老師辦理儲值。");
         return;
       }
 
-      if (confirm(`【確認預約課程】\n課程類型：${categoryName}\n預約時段：${dateKey} ${timeStr}\n\n系統將自動扣除 1 堂課堂數，是否確認送出？`)) {
+      const promptMsg = teacherInfo.deductPoints !== false 
+        ? `【確認預約】\n課程：${categoryName}\n時段：${dateKey} ${timeStr}\n\n系統將自動扣除 1 堂點數，是否確認？`
+        : `【確認預約】\n課程：${categoryName}\n時段：${dateKey} ${timeStr}\n\n是否確認送出預約申請？`;
+
+      if (confirm(promptMsg)) {
         bookedList.push({ name: lineUserName, time: Date.now() });
-        db.ref(`${DB_BOOKINGS}/${slotKey}`).set(bookedList);
-        db.ref(`${DB_STUDENTS}/${lineUserName}/points`).transaction(p => (p || 0) - 1);
-        addSystemLog(`學員 [${lineUserName}] 成功預約了 ${categoryName} (${dateKey} ${timeStr})，扣除 1 堂`);
+        db.ref(`${DB_BOOKINGS}/${slotKey}`).set({ isOpen: true, max: maxCapacity, booked: bookedList });
+        
+        if (teacherInfo.deductPoints !== false) {
+          db.ref(`${DB_STUDENTS}/${lineUserName}/points`).transaction(p => (p || 0) - 1);
+        }
+        addSystemLog(`學員 [${lineUserName}] 預約了 ${categoryName} (${dateKey} ${timeStr})`);
         alert("預約成功！期待您的到課！");
       }
     }
@@ -288,14 +374,14 @@
 
     function addStudentPoints(sName) {
       const currentPts = studentDatabase[sName]?.points || 0;
-      const addStr = prompt(`【學員點數儲值 - ${sName}】\n目前剩餘：${currentPts} 堂\n\n請輸入欲增加或調整的堂數 (例如輸入 10 增加 10 堂)：`, "10");
+      const addStr = prompt(`【學員點數儲值 - ${sName}】\n目前剩餘：${currentPts} 堂\n\n請輸入欲增加或調整的堂數：`, "10");
       if(addStr !== null) {
         const val = parseInt(addStr);
         if(!isNaN(val)) {
           const newPts = currentPts + val;
           db.ref(`${DB_STUDENTS}/${sName}/points`).set(newPts);
-          addSystemLog(`老師為學員 [${sName}] 辦理儲值/調整 ${val} 堂 (現有總堂數：${newPts} 堂)`);
-          alert(`已成功更新 ${sName} 的課堂點數為 ${newPts} 堂！`);
+          addSystemLog(`老師為 [${sName}] 儲值/調整 ${val} 堂 (現有總堂數：${newPts} 堂)`);
+          alert(`更新成功！現有堂數：${newPts} 堂`);
         }
       }
     }
@@ -313,7 +399,7 @@
     .page-container { max-width: 1000px; width: 95%; background: #1f2937; border: 1px solid #374151; border-radius: 16px; padding: 30px; box-sizing: border-box; margin-top: 20px; margin-bottom: 60px; }
     .sidebar { position: fixed; top: 0; right: -320px; width: 300px; height: 100%; background: #1f2937; border-left: 1px solid #374151; padding: 40px 24px; transition: right 0.3s; z-index: 1000; box-sizing: border-box; }
     .sidebar.open { right: 0; }
-    .room-selector { display: flex; gap: 10px; margin-bottom: 25px; background: #111827; padding: 8px; border-radius: 12px; }
+    .room-selector { display: flex; gap: 10px; margin-bottom: 25px; background: #111827; padding: 8px; border-radius: 12px; align-items: center; }
     .room-btn { background: transparent; border: none; padding: 10px 20px; color: #9ca3af; font-size: 14px; font-weight: bold; cursor: pointer; border-radius: 8px; }
     .room-btn.active { background: #10b981; color: #111827; }
     table { width: 100%; border-collapse: separate; border-spacing: 0; background: #111827; border: 1px solid #374151; border-radius: 12px; overflow: hidden; }
@@ -321,6 +407,7 @@
     th { background: #1f2937; color: #10b981; }
     .available-slot { cursor: pointer; color: #34d399; font-weight: 600; }
     .available-slot:hover { background: #374151; }
+    .closed-slot { background: #1f2937; color: #4b5563; cursor: pointer; }
     .user-booked { background: #064e3b !important; color: #a7f3d0 !important; cursor: pointer; font-weight: bold; }
     .full-slot { background: #312e81; color: #818cf8 !important; cursor: not-allowed; }
     button { background: #374151; border: 1px solid #4b5563; border-radius: 8px; padding: 8px 16px; color: #fff; cursor: pointer; }
@@ -331,7 +418,7 @@
   <div class="navbar">
     <div style="display:flex; gap:10px;">
       <button onclick="switchPage('cal')">📅 課程表預約</button>
-      <button id="btn-nav-manage" style="display:none; background:#f59e0b; color:#111827; font-weight:bold;" onclick="switchPage('manage')">👥 老師學生管理後台</button>
+      <button id="btn-nav-manage" style="display:none; background:#f59e0b; color:#111827; font-weight:bold;" onclick="switchPage('manage')">👥 老師管理後台</button>
     </div>
     <button onclick="toggleSidebar()">👤 個人課堂點數</button>
   </div>
@@ -351,8 +438,8 @@
       <h2 id="teacher-title-display">學員預約與課堂扣點系統</h2>
       
       <div class="room-selector">
-        <button id="btn-cat-group" class="room-btn active" onclick="switchCategory('group')">🧘‍♀️ 團體床課程 (最多4人)</button>
-        <button id="btn-cat-private" class="room-btn" onclick="switchCategory('private')">👤 1對1 私教課 (專屬預約)</button>
+        <button id="btn-cat-pilates" class="room-btn active" onclick="switchCategory('pilates')">🧘‍♀️ 皮拉提斯 (老師開課制)</button>
+        <button id="btn-cat-fitness" class="room-btn" onclick="switchCategory('fitness')">🏋️‍♂️ 健身私教 (學員自由預約)</button>
         <input type="date" id="calendar-date-input" style="margin-left:auto; background:#1f2937; border:1px solid #374151; color:#10b981; padding:6px; border-radius:6px;" onchange="currentStartDate = new Date(this.value); renderCalendar();">
       </div>
 
@@ -364,6 +451,15 @@
 
     <div id="admin-page" style="display:none;">
       <h2>👥 老師後台：學員點數與開課管理</h2>
+
+      <div style="border:1px solid #374151; border-radius:12px; padding:20px; background:#111827; margin-top:20px; display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <h4 style="margin:0; color:#fff;">預約扣點機制設定</h4>
+          <p style="margin:4px 0 0 0; font-size:12px; color:#9ca3af;">關閉後學員預約將不檢查也不扣除剩餘堂數（適合免費排課教練）</p>
+        </div>
+        <button id="toggle-deduct-btn" onclick="toggleDeductMode()" style="font-weight:bold;"></button>
+      </div>
+      
       <div style="border:1px solid #374151; border-radius:12px; padding:20px; background:#111827; margin-top:20px;">
         <h3>全體學員課堂點數名單</h3>
         <table style="margin-top:10px;">
