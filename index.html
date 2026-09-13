@@ -201,7 +201,9 @@
       const theadRow = document.getElementById("calendar-th-row");
       if (theadRow) {
         let thHtml = '<th style="width: 90px;">時間</th>';
-        weekDays.forEach(day => { thHtml += `<th>${day.displayTh}</th>`; });
+        weekDays.forEach(day => { 
+          thHtml += `<th style="${isAdmin ? 'cursor:pointer; text-decoration:underline;' : ''}" onclick="handleDayHeaderClick('${day.dbKey}', '${day.displayTh}')">${day.displayTh}</th>`; 
+        });
         theadRow.innerHTML = thHtml;
       }
 
@@ -257,6 +259,60 @@
         htmlCode += `</tr>`;
       }
       tbody.innerHTML = htmlCode;
+    }
+
+    // === 點擊表頭星期一鍵關閉全天或開啟全天 ===
+    function handleDayHeaderClick(dateKey, displayTh) {
+      if (!isAdmin) return;
+      const categoryName = currentCategory === "pilates" ? "皮拉提斯" : "健身私教";
+
+      let action = prompt(
+        `【老師整天時段管理】\n日期：${dateKey} (${displayTh})\n課程種類：${categoryName}\n\n` +
+        `請選擇全天批次操作：\n` +
+        `[1] 🔴 關閉整天 (07:00 ~ 22:00 全不開放)\n` +
+        `[2] 🟢 開啟整天 (07:00 ~ 22:00 全開放預約)`
+      );
+
+      if (action === "1") {
+        if (confirm(`確定要【關閉 ${dateKey} 整天】嗎？\n如已有學員預約，關閉將會自動完成全額退點。`)) {
+          for (let h = 7; h <= 22; h++) {
+            const slotKey = `${currentCategory}_${dateKey}_${h}`;
+            const existing = studentBookings[slotKey] || {};
+            let bookedList = Array.isArray(existing) ? existing : (existing.booked || []);
+
+            if (teacherInfo.deductPoints !== false && bookedList.length > 0) {
+              bookedList.forEach(b => {
+                db.ref(`${DB_STUDENTS}/${b.name}/points`).transaction(p => (p || 0) + 1);
+              });
+            }
+
+            db.ref(`${DB_BOOKINGS}/${slotKey}`).set({
+              isOpen: false,
+              max: existing.max || 4,
+              booked: []
+            });
+          }
+          addSystemLog(`老師一鍵【關閉全天】時段：${dateKey} (${categoryName})`);
+          alert(`已成功將 ${dateKey} 全天關閉，預約學員已完成退點！`);
+        }
+      } else if (action === "2") {
+        let inputMax = prompt("請設定開啟整天的人數上限：", "4");
+        let maxVal = parseInt(inputMax) || 4;
+
+        for (let h = 7; h <= 22; h++) {
+          const slotKey = `${currentCategory}_${dateKey}_${h}`;
+          const existing = studentBookings[slotKey] || {};
+          let bookedList = Array.isArray(existing) ? existing : (existing.booked || []);
+
+          db.ref(`${DB_BOOKINGS}/${slotKey}`).set({
+            isOpen: true,
+            max: maxVal,
+            booked: bookedList
+          });
+        }
+        addSystemLog(`老師一鍵【開啟全天】預約：${dateKey} (${categoryName})`);
+        alert(`已成功開啟 ${dateKey} 全天 07:00 ~ 22:00 的課程預約！`);
+      }
     }
 
     function getFutureDates(startDateStr, hour, weeksCount) {
@@ -348,7 +404,6 @@
         return;
       }
 
-      // === 學員取消預約 (包含單週 vs 全部批次取消選項) ===
       if (isUserBooked) {
         let cancelOpt = prompt(
           `【取消預約選項】\n您已預約：${categoryName}\n時段：${dateKey} ${timeStr}\n\n` +
@@ -367,7 +422,6 @@
           addSystemLog(`學員 [${lineUserName}] 取消了 ${categoryName} (${dateKey} ${timeStr}) 單堂預約`);
           alert("已取消今天這堂預約，堂數已退回帳戶！");
         } else if (cancelOpt === "2") {
-          // 搜尋未來 12 週同時間是否有預約並一併取消
           const futureDates = getFutureDates(rawDateISO, hour, 12);
           let refundedCount = 0;
 
@@ -451,7 +505,6 @@
       }
     }
 
-    // === 老師後台：學員點數、修改與刪除管理 ===
     function updateAdminDashboard() {
       const container = document.getElementById("admin-student-list");
       if(!container) return;
@@ -479,7 +532,6 @@
       }
     }
 
-    // 1. 儲值堂數 (累加)
     function addStudentPoints(sName) {
       const currentPts = studentDatabase[sName]?.points || 0;
       const addStr = prompt(`【學員點數儲值 - ${sName}】\n目前剩餘：${currentPts} 堂\n\n請輸入欲增加的堂數 (如輸入 10 增加 10 堂)：`, "10");
@@ -494,7 +546,6 @@
       }
     }
 
-    // 2. 直接重設/修改點數 (設定絕對數字)
     function setStudentPointsDirectly(sName) {
       const currentPts = studentDatabase[sName]?.points || 0;
       const setStr = prompt(`【直接修改點數 - ${sName}】\n目前堂數：${currentPts} 堂\n\n請輸入要變更為的總堂數：`, currentPts);
@@ -508,7 +559,6 @@
       }
     }
 
-    // 3. 刪除學員帳號
     function deleteStudentAccount(sName) {
       if (confirm(`⚠️ 警告：確定要刪除學員 [${sName}] 嗎？\n刪除後該學員的剩餘堂數與歷史紀錄將會被完全清除！`)) {
         db.ref(`${DB_STUDENTS}/${sName}`).remove();
