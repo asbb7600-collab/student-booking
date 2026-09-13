@@ -86,7 +86,7 @@
     }
 
     document.addEventListener("DOMContentLoaded", function() {
-      document.getElementById("calendar-date-input").value = currentStartDate.toISOString().split('T')[0];
+      syncDatePickerValue();
       startFirebaseListeners();
 
       liff.init({ liffId: "2010786850-Dl999iMJ" })
@@ -114,6 +114,23 @@
         }
       }).catch(err => console.error(err));
     });
+
+    function syncDatePickerValue() {
+      const input = document.getElementById("calendar-date-input");
+      if (input) {
+        const y = currentStartDate.getFullYear();
+        const m = (currentStartDate.getMonth() + 1).toString().padStart(2, '0');
+        const d = currentStartDate.getDate().toString().padStart(2, '0');
+        input.value = `${y}-${m}-${d}`;
+      }
+    }
+
+    // === 日期切換控制（向左/向右跳頁） ===
+    function changeWeek(offsetDays) {
+      currentStartDate.setDate(currentStartDate.getDate() + offsetDays);
+      syncDatePickerValue();
+      renderCalendar();
+    }
 
     function updateSidebarInfo() {
       if (!studentDatabase[lineUserName]) {
@@ -243,7 +260,6 @@
       tbody.innerHTML = htmlCode;
     }
 
-    // 計算連續週數日期的輔助函式
     function getFutureDates(startDateStr, hour, weeksCount) {
       const dates = [];
       let baseDate = new Date(startDateStr);
@@ -266,7 +282,6 @@
       const categoryName = currentCategory === "pilates" ? "皮拉提斯課程" : "健身私教課";
       const isUserBooked = bookedList.some(b => b.name === lineUserName);
 
-      // === 老師 (管理者) 操作邏輯 ===
       if (isAdmin) {
         let action = prompt(
           `【老師管理時段】\n模式：${categoryName}\n時段：${dateKey} ${timeStr}\n目前狀態：${isOpen ? '開放中' : '關閉/未開課'}\n人數：${bookedList.length}/${maxCapacity}\n名單：${bookedList.map(b=>b.name).join(', ') || '無'}\n\n` +
@@ -327,7 +342,6 @@
         return;
       }
 
-      // === 學員預約 / 取消邏輯 ===
       if (!isOpen) {
         alert("該時段目前未開放預約，請選擇其他時段！");
         return;
@@ -352,7 +366,6 @@
         return;
       }
 
-      // 學員選擇預約週數
       let weekOpt = prompt(
         `【預約課程與固定週數】\n課程：${categoryName}\n首堂時段：${dateKey} ${timeStr}\n\n` +
         `請選擇預約模式：\n` +
@@ -458,6 +471,8 @@
     .room-selector { display: flex; gap: 10px; margin-bottom: 25px; background: #111827; padding: 8px; border-radius: 12px; align-items: center; flex-wrap: wrap; }
     .room-btn { background: transparent; border: none; padding: 10px 20px; color: #9ca3af; font-size: 14px; font-weight: bold; cursor: pointer; border-radius: 8px; }
     .room-btn.active { background: #10b981; color: #111827; }
+    .nav-arrow-btn { background: #374151; color: #10b981; border: 1px solid #4b5563; font-weight: bold; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+    .nav-arrow-btn:hover { background: #4b5563; }
     table { width: 100%; border-collapse: separate; border-spacing: 0; background: #111827; border: 1px solid #374151; border-radius: 12px; overflow: hidden; }
     th, td { border-bottom: 1px solid #374151; border-right: 1px solid #374151; text-align: center; font-size: 13px; height: 48px; color: #d1d5db; padding: 4px; }
     th { background: #1f2937; color: #10b981; }
@@ -496,7 +511,12 @@
       <div class="room-selector">
         <button id="btn-cat-pilates" class="room-btn active" onclick="switchCategory('pilates')">🧘‍♀️ 皮拉提斯 (老師開課制)</button>
         <button id="btn-cat-fitness" class="room-btn" onclick="switchCategory('fitness')">🏋️‍♂️ 健身私教 (開放預約)</button>
-        <input type="date" id="calendar-date-input" style="margin-left:auto; background:#1f2937; border:1px solid #374151; color:#10b981; padding:6px; border-radius:6px;" onchange="currentStartDate = new Date(this.value); renderCalendar();">
+        
+        <div style="margin-left:auto; display:flex; align-items:center; gap:6px;">
+          <button class="nav-arrow-btn" onclick="changeWeek(-7)">◀ 上一週</button>
+          <input type="date" id="calendar-date-input" style="background:#1f2937; border:1px solid #374151; color:#10b981; padding:6px; border-radius:6px;" onchange="currentStartDate = new Date(this.value); renderCalendar();">
+          <button class="nav-arrow-btn" onclick="changeWeek(7)">下一週 ▶</button>
+        </div>
       </div>
 
       <table>
