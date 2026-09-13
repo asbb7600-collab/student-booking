@@ -2,13 +2,9 @@
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>學員預約系統</title>
-  
-  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <title>SaaS 平台總管理員控制台</title>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
-
   <script>
     const firebaseConfig = {
       apiKey: "AIzaSyBnvqcHnCfjAdBoF-qT03X0gpInzSZtiGE",
@@ -19,467 +15,87 @@
       messagingSenderId: "716257034873",
       appId: "1:716257034873:web:e942e1e8c22b70be618aa8"
     };
-    
     firebase.initializeApp(firebaseConfig);
     const db = firebase.database();
 
-    const urlParams = new URLSearchParams(window.location.search);
-    const currentTeacherId = urlParams.get('teacher') || 'hank';
-
-    const DB_TEACHER_INFO = `teachers/${currentTeacherId}/info`;
-    const DB_STUDENTS = `teachers/${currentTeacherId}/students`;
-    const DB_BOOKINGS = `teachers/${currentTeacherId}/bookings`;
-    const DB_LOGS = `teachers/${currentTeacherId}/logs`;
-
-    let teacherInfo = { name: "教練", mode: "pilates", deductPoints: true, status: "active" };
-    let studentDatabase = {};
-    let studentBookings = {};
-    let systemLogs = [];
-
-    let lineUserName = "";
-    let isAdmin = false; 
-    let currentCategory = "pilates"; // pilates: 皮拉提斯(開課制), fitness: 健身私教(自由預約)
-    let currentStartDate = new Date();
-
-    function startFirebaseListeners() {
-      db.ref(DB_TEACHER_INFO).on("value", (snapshot) => {
-        const val = snapshot.val();
-        if (val) teacherInfo = val;
-        
-        if (teacherInfo.status === "suspended") {
-          document.body.innerHTML = `<div style="color:#fff; text-align:center; padding-top:100px; font-size:18px;">⚠️ 該教練服務已到期或暫停使用，請聯繫管理員。</div>`;
-          return;
+    document.addEventListener("DOMContentLoaded", () => {
+      db.ref("teachers").on("value", (snapshot) => {
+        const teachers = snapshot.val() || {};
+        let html = '';
+        for (let tid in teachers) {
+          const info = teachers[tid].info || {};
+          const statusBadge = info.status === 'active' ? '🟢 服務中' : '🔴 停權';
+          const modeLabel = info.mode === 'fitness' ? '🏋️‍♂️ 健身私教' : '🧘‍♀️ 皮拉提斯';
+          const deductLabel = info.deductPoints !== false ? '🟢 扣點' : '⚪ 免扣點';
+          const link = `https://liff.line.me/2010786850-Dl999iMJ?teacher=${tid}`;
+          
+          html += `
+            <tr>
+              <td><b>${tid}</b></td>
+              <td>${info.name || '未命名'}</td>
+              <td>${info.ownerName || '未指定'}</td>
+              <td>${modeLabel} / ${deductLabel}</td>
+              <td>${statusBadge}</td>
+              <td><a href="${link}" target="_blank" style="color:#34d399;">點此開啟預約頁</a></td>
+              <td>
+                <button onclick="toggleStatus('${tid}', '${info.status}')">切換 開通/停權</button>
+              </td>
+            </tr>
+          `;
         }
-
-        document.getElementById("teacher-title-display").innerText = `${teacherInfo.name || "教練"} - 學員預約系統`;
-        
-        // 套用老師預設設定
-        if (teacherInfo.mode) currentCategory = teacherInfo.mode;
-        updateModeButtons();
-        updateDeductToggleUI();
+        document.getElementById("teacher-list").innerHTML = html || '<tr><td colspan="7">目前尚無教練租用中</td></tr>';
       });
-
-      db.ref(DB_STUDENTS).on("value", (snapshot) => {
-        studentDatabase = snapshot.val() || {};
-        if (lineUserName) {
-          isAdmin = (lineUserName === "蕭斈健 Hank") || (lineUserName === teacherInfo.ownerName) || (studentDatabase[lineUserName]?.role === "admin");
-          updateSidebarInfo();
-          checkAdminElementsDisplay();
-        }
-        if (isAdmin) updateAdminDashboard();
-      });
-
-      db.ref(DB_BOOKINGS).on("value", (snapshot) => {
-        studentBookings = snapshot.val() || {};
-        renderCalendar();
-      });
-
-      db.ref(DB_LOGS).on("value", (snapshot) => {
-        systemLogs = snapshot.val() || [];
-        if (isAdmin) updateAdminDashboard();
-      });
-    }
-
-    function addSystemLog(msg) {
-      const now = new Date();
-      const timeStr = `${now.getFullYear()}/${(now.getMonth()+1).toString().padStart(2,'0')}/${now.getDate().toString().padStart(2,'0')} ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
-      const updatedLogs = [`[${timeStr}] ${msg}`, ...systemLogs];
-      db.ref(DB_LOGS).set(updatedLogs);
-    }
-
-    document.addEventListener("DOMContentLoaded", function() {
-      document.getElementById("calendar-date-input").value = currentStartDate.toISOString().split('T')[0];
-      startFirebaseListeners();
-
-      liff.init({ liffId: "2010786850-Dl999iMJ" })
-      .then(() => {
-        if (!liff.isLoggedIn()) {
-          liff.login();
-        } else {
-          liff.getProfile().then(profile => {
-            lineUserName = profile.displayName ? profile.displayName.trim() : "訪客學員";
-            
-            db.ref(`${DB_STUDENTS}/${lineUserName}`).get().then((snapshot) => {
-              if (!snapshot.exists()) {
-                db.ref(`${DB_STUDENTS}/${lineUserName}`).set({
-                  points: 0,
-                  history: [],
-                  role: (lineUserName === "蕭斈健 Hank" || lineUserName === teacherInfo.ownerName) ? "admin" : "user"
-                });
-              }
-            });
-
-            updateSidebarInfo();
-            checkAdminElementsDisplay();
-            renderCalendar();
-          });
-        }
-      }).catch(err => console.error(err));
     });
 
-    function updateSidebarInfo() {
-      if (!studentDatabase[lineUserName]) {
-        studentDatabase[lineUserName] = { points: 0, history: [], role: "user" };
-      }
-      document.getElementById("sidebar-name").innerText = lineUserName;
-      document.getElementById("sidebar-points").innerText = (studentDatabase[lineUserName].points || 0) + " 堂";
+    function addTeacher() {
+      const tid = prompt("請輸入新教練代碼 (例: chang, lin, teacher01):");
+      if (!tid) return;
+      const tName = prompt("請輸入教練名稱/工作室名稱 (例: 張教練皮拉提斯):");
+      const ownerName = prompt("請輸入教練的 LINE 顯示名稱 (用來給予教練管理權限):");
+      
+      const isFitness = confirm("點擊【確定】設定為健身私教模式（自由預約）；點擊【取消】設定為皮拉提斯模式（開課制）：");
+      const isDeduct = confirm("點擊【確定】預設開啟點數扣堂；點擊【取消】預設免扣點：");
+
+      db.ref(`teachers/${tid}/info`).set({
+        name: tName || "新教練",
+        ownerName: ownerName || "",
+        mode: isFitness ? "fitness" : "pilates",
+        deductPoints: isDeduct,
+        status: "active",
+        createdAt: Date.now()
+      });
+      alert(`已成功開通教練 [${tName}]！\n專屬連結：https://liff.line.me/2010786850-Dl999iMJ?teacher=${tid}`);
     }
 
-    function checkAdminElementsDisplay() {
-      const adminNavBtn = document.getElementById("btn-nav-manage");
-      if (isAdmin) {
-        document.getElementById("admin-status").innerText = "身份：老師 / 課堂管理者";
-        document.getElementById("admin-status").style.color = "#f59e0b";
-        if(adminNavBtn) adminNavBtn.style.display = "inline-block";
-      } else {
-        document.getElementById("admin-status").innerText = "身份：學員";
-        document.getElementById("admin-status").style.color = "#6b7280";
-        if(adminNavBtn) adminNavBtn.style.display = "none";
-      }
-    }
-
-    function switchCategory(cat) {
-      currentCategory = cat;
-      updateModeButtons();
-      renderCalendar();
-    }
-
-    function updateModeButtons() {
-      const btnP = document.getElementById("btn-cat-pilates");
-      const btnF = document.getElementById("btn-cat-fitness");
-      if (btnP) btnP.className = currentCategory === 'pilates' ? 'room-btn active' : 'room-btn';
-      if (btnF) btnF.className = currentCategory === 'fitness' ? 'room-btn active' : 'room-btn';
-    }
-
-    function updateDeductToggleUI() {
-      const toggleBtn = document.getElementById("toggle-deduct-btn");
-      if (toggleBtn) {
-        toggleBtn.innerText = teacherInfo.deductPoints !== false ? "🟢 點數扣堂：已開啟" : "⚪ 免扣點預約：已開啟";
-        toggleBtn.style.background = teacherInfo.deductPoints !== false ? "#10b981" : "#6b7280";
-      }
-    }
-
-    function toggleDeductMode() {
-      if (!isAdmin) return;
-      const nextState = teacherInfo.deductPoints === false ? true : false;
-      db.ref(`${DB_TEACHER_INFO}/deductPoints`).set(nextState);
-      addSystemLog(`老師將【預約扣點機制】切換為：${nextState ? '開啟扣堂' : '免扣點自由預約'}`);
-    }
-
-    function getWeekDays(startDate) {
-      const daysArr = [];
-      const weekNames = ['日', '一', '二', '三', '四', '五', '六'];
-      for (let i = 0; i < 7; i++) {
-        const d = new Date(startDate);
-        d.setDate(startDate.getDate() + i);
-        daysArr.push({
-          displayTh: `${d.getMonth() + 1}/${d.getDate()} (${weekNames[d.getDay()]})`,
-          dbKey: `${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')}`
-        });
-      }
-      return daysArr;
-    }
-
-    function renderCalendar() {
-      const weekDays = getWeekDays(currentStartDate);
-      const theadRow = document.getElementById("calendar-th-row");
-      if (theadRow) {
-        let thHtml = '<th style="width: 90px;">時間</th>';
-        weekDays.forEach(day => { thHtml += `<th>${day.displayTh}</th>`; });
-        theadRow.innerHTML = thHtml;
-      }
-
-      const tbody = document.getElementById("calendar-body");
-      if(!tbody) return;
-
-      let htmlCode = '';
-
-      for(let h = 8; h <= 20; h++) {
-        let timeStr = `${h.toString().padStart(2, '0')}:00`;
-        htmlCode += `<tr><td class="time-col">${timeStr}</td>`;
-
-        weekDays.forEach(day => {
-          const slotKey = `${currentCategory}_${day.dbKey}_${h}`;
-          const slotData = studentBookings[slotKey] || {};
-          
-          let bookedList = [];
-          let maxCapacity = 1;
-          let isOpen = false;
-
-          if (Array.isArray(slotData)) {
-            bookedList = slotData;
-            isOpen = true;
-            maxCapacity = currentCategory === "pilates" ? 4 : 1;
-          } else {
-            bookedList = slotData.booked || [];
-            maxCapacity = slotData.max || (currentCategory === "pilates" ? 4 : 1);
-            isOpen = currentCategory === "fitness" ? (slotData.isOpen !== false) : (slotData.isOpen === true);
-          }
-
-          const isUserBooked = bookedList.some(b => b.name === lineUserName);
-          const currentCount = bookedList.length;
-
-          let cellClass = "available-slot";
-          let cellText = "";
-
-          if (!isOpen) {
-            cellClass = "closed-slot";
-            cellText = isAdmin ? "未開課 (點擊設置)" : "未開放";
-          } else if (isUserBooked) {
-            cellClass = "user-booked";
-            cellText = `已預約 (${currentCount}/${maxCapacity})`;
-          } else if (currentCount >= maxCapacity) {
-            cellClass = "full-slot";
-            cellText = "已額滿";
-          } else {
-            cellClass = "available-slot";
-            cellText = `可預約 (${currentCount}/${maxCapacity})`;
-          }
-
-          htmlCode += `<td class="${cellClass}" onclick="handleSlotClick('${slotKey}', '${day.dbKey}', ${h}, '${timeStr}', ${maxCapacity}, ${isOpen})">${cellText}</td>`;
-        });
-        htmlCode += `</tr>`;
-      }
-      tbody.innerHTML = htmlCode;
-    }
-
-    function handleSlotClick(slotKey, dateKey, hour, timeStr, defaultMax, isOpen) {
-      const rawData = studentBookings[slotKey] || {};
-      let bookedList = Array.isArray(rawData) ? rawData : (rawData.booked || []);
-      let maxCapacity = rawData.max || defaultMax;
-
-      const categoryName = currentCategory === "pilates" ? "皮拉提斯課程" : "健身私教課";
-      const isUserBooked = bookedList.some(b => b.name === lineUserName);
-
-      // === 老師 (管理者) 操作邏輯 ===
-      if (isAdmin) {
-        let action = prompt(
-          `【老師管理時段】\n模式：${categoryName}\n時段：${dateKey} ${timeStr}\n目前狀態：${isOpen ? '開放中' : '關閉/未開課'}\n人數：${bookedList.length}/${maxCapacity}\n名單：${bookedList.map(b=>b.name).join(', ') || '無'}\n\n` +
-          `請選擇操作：\n` +
-          `[1] ${isOpen ? '關閉此時段' : '開啟此時段預約'}\n` +
-          `[2] 手動幫學生報名代訂\n` +
-          `[3] 清空所有人 (可退點)`
-        );
-
-        if (action === "1") {
-          let newOpenState = !isOpen;
-          let newMax = maxCapacity;
-          if (newOpenState && currentCategory === "pilates") {
-            let inputMax = prompt("請設定此皮拉提斯課程開課人數上限：", "4");
-            if (inputMax) newMax = parseInt(inputMax) || 4;
-          }
-          db.ref(`${DB_BOOKINGS}/${slotKey}`).set({
-            isOpen: newOpenState,
-            max: newMax,
-            booked: bookedList
-          });
-          addSystemLog(`老師將 ${categoryName} (${dateKey} ${timeStr}) 設定為 ${newOpenState ? '開放' : '關閉'}`);
-        } else if (action === "2") {
-          let studentName = prompt("請輸入要代訂的學員 LINE 名稱：");
-          if (studentName) {
-            bookedList.push({ name: studentName, time: Date.now() });
-            db.ref(`${DB_BOOKINGS}/${slotKey}`).set({ isOpen: true, max: maxCapacity, booked: bookedList });
-            if (teacherInfo.deductPoints !== false) {
-              db.ref(`${DB_STUDENTS}/${studentName}/points`).transaction(p => (p || 0) - 1);
-            }
-            addSystemLog(`老師為 [${studentName}] 代訂 ${categoryName} (${dateKey} ${timeStr})`);
-            alert("代訂成功！");
-          }
-        } else if (action === "3") {
-          if (confirm("確定要清空所有人嗎？")) {
-            if (teacherInfo.deductPoints !== false) {
-              bookedList.forEach(b => {
-                db.ref(`${DB_STUDENTS}/${b.name}/points`).transaction(p => (p || 0) + 1);
-              });
-            }
-            db.ref(`${DB_BOOKINGS}/${slotKey}`).remove();
-            addSystemLog(`老師清空了 ${categoryName} (${dateKey} ${timeStr}) 的名單`);
-            alert("已成功清空！");
-          }
-        }
-        return;
-      }
-
-      // === 學員預約 / 取消邏輯 ===
-      if (!isOpen) {
-        alert("該時段目前未開放預約，請選擇其他時段！");
-        return;
-      }
-
-      if (isUserBooked) {
-        if (confirm(`【取消預約】\n您已預約：${categoryName}\n時段：${dateKey} ${timeStr}\n\n是否確定取消？`)) {
-          bookedList = bookedList.filter(b => b.name !== lineUserName);
-          db.ref(`${DB_BOOKINGS}/${slotKey}`).set({ isOpen: true, max: maxCapacity, booked: bookedList });
-          
-          if (teacherInfo.deductPoints !== false) {
-            db.ref(`${DB_STUDENTS}/${lineUserName}/points`).transaction(p => (p || 0) + 1);
-          }
-          addSystemLog(`學員 [${lineUserName}] 取消了 ${categoryName} (${dateKey} ${timeStr})`);
-          alert("預約已取消！");
-        }
-        return;
-      }
-
-      if (bookedList.length >= maxCapacity) {
-        alert("非常抱歉，該時段名額已滿！");
-        return;
-      }
-
-      const userPoints = studentDatabase[lineUserName]?.points || 0;
-      if (teacherInfo.deductPoints !== false && userPoints <= 0) {
-        alert("【預約失敗】您的剩餘課堂點數不足！請聯繫老師辦理儲值。");
-        return;
-      }
-
-      const promptMsg = teacherInfo.deductPoints !== false 
-        ? `【確認預約】\n課程：${categoryName}\n時段：${dateKey} ${timeStr}\n\n系統將自動扣除 1 堂點數，是否確認？`
-        : `【確認預約】\n課程：${categoryName}\n時段：${dateKey} ${timeStr}\n\n是否確認送出預約申請？`;
-
-      if (confirm(promptMsg)) {
-        bookedList.push({ name: lineUserName, time: Date.now() });
-        db.ref(`${DB_BOOKINGS}/${slotKey}`).set({ isOpen: true, max: maxCapacity, booked: bookedList });
-        
-        if (teacherInfo.deductPoints !== false) {
-          db.ref(`${DB_STUDENTS}/${lineUserName}/points`).transaction(p => (p || 0) - 1);
-        }
-        addSystemLog(`學員 [${lineUserName}] 預約了 ${categoryName} (${dateKey} ${timeStr})`);
-        alert("預約成功！期待您的到課！");
-      }
-    }
-
-    function updateAdminDashboard() {
-      const container = document.getElementById("admin-student-list");
-      if(!container) return;
-      let html = '';
-
-      for(let sName in studentDatabase) {
-        const pts = studentDatabase[sName].points || 0;
-        html += `
-          <tr>
-            <td style="color:#fff; font-weight:bold; text-align:left; padding-left:15px;">${sName}</td>
-            <td style="color:#10b981; font-weight:bold;">${pts} 堂</td>
-            <td>
-              <button style="padding:4px 8px; font-size:11px;" onclick="addStudentPoints('${sName}')">➕ 儲值堂數</button>
-            </td>
-          </tr>
-        `;
-      }
-      container.innerHTML = html || '<tr><td colspan="3">尚無學員資料</td></tr>';
-
-      const logBox = document.getElementById("admin-log-box");
-      if(logBox) {
-        logBox.innerHTML = systemLogs.map(l => `<div style="border-bottom:1px solid #374151; padding:4px 0;">${l}</div>`).join('');
-      }
-    }
-
-    function addStudentPoints(sName) {
-      const currentPts = studentDatabase[sName]?.points || 0;
-      const addStr = prompt(`【學員點數儲值 - ${sName}】\n目前剩餘：${currentPts} 堂\n\n請輸入欲增加或調整的堂數：`, "10");
-      if(addStr !== null) {
-        const val = parseInt(addStr);
-        if(!isNaN(val)) {
-          const newPts = currentPts + val;
-          db.ref(`${DB_STUDENTS}/${sName}/points`).set(newPts);
-          addSystemLog(`老師為 [${sName}] 儲值/調整 ${val} 堂 (現有總堂數：${newPts} 堂)`);
-          alert(`更新成功！現有堂數：${newPts} 堂`);
-        }
-      }
-    }
-
-    function toggleSidebar() { document.getElementById("sidebar").classList.toggle("open"); }
-    function switchPage(p) {
-      document.getElementById("calendar-page").style.display = p === 'cal' ? 'block' : 'none';
-      document.getElementById("admin-page").style.display = p === 'manage' ? 'block' : 'none';
+    function toggleStatus(tid, currentStatus) {
+      const nextStatus = currentStatus === 'active' ? 'suspended' : 'active';
+      db.ref(`teachers/${tid}/info/status`).set(nextStatus);
     }
   </script>
-
   <style>
-    body { font-family: -apple-system, sans-serif; background: #111827; color: #e5e7eb; margin: 0; padding: 0; display: flex; flex-direction: column; align-items: center; }
-    .navbar { width: 100%; max-width: 1000px; display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; box-sizing: border-box; background: #1f2937; border-bottom: 1px solid #374151; position: sticky; top: 0; z-index: 40; }
-    .page-container { max-width: 1000px; width: 95%; background: #1f2937; border: 1px solid #374151; border-radius: 16px; padding: 30px; box-sizing: border-box; margin-top: 20px; margin-bottom: 60px; }
-    .sidebar { position: fixed; top: 0; right: -320px; width: 300px; height: 100%; background: #1f2937; border-left: 1px solid #374151; padding: 40px 24px; transition: right 0.3s; z-index: 1000; box-sizing: border-box; }
-    .sidebar.open { right: 0; }
-    .room-selector { display: flex; gap: 10px; margin-bottom: 25px; background: #111827; padding: 8px; border-radius: 12px; align-items: center; }
-    .room-btn { background: transparent; border: none; padding: 10px 20px; color: #9ca3af; font-size: 14px; font-weight: bold; cursor: pointer; border-radius: 8px; }
-    .room-btn.active { background: #10b981; color: #111827; }
-    table { width: 100%; border-collapse: separate; border-spacing: 0; background: #111827; border: 1px solid #374151; border-radius: 12px; overflow: hidden; }
-    th, td { border-bottom: 1px solid #374151; border-right: 1px solid #374151; text-align: center; font-size: 13px; height: 48px; color: #d1d5db; padding: 4px; }
-    th { background: #1f2937; color: #10b981; }
-    .available-slot { cursor: pointer; color: #34d399; font-weight: 600; }
-    .available-slot:hover { background: #374151; }
-    .closed-slot { background: #1f2937; color: #4b5563; cursor: pointer; }
-    .user-booked { background: #064e3b !important; color: #a7f3d0 !important; cursor: pointer; font-weight: bold; }
-    .full-slot { background: #312e81; color: #818cf8 !important; cursor: not-allowed; }
-    button { background: #374151; border: 1px solid #4b5563; border-radius: 8px; padding: 8px 16px; color: #fff; cursor: pointer; }
+    body { font-family: sans-serif; background: #111827; color: #fff; padding: 40px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #374151; padding: 12px; text-align: left; }
+    th { background: #1f2937; }
+    button { background: #10b981; color: #111827; font-weight: bold; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; }
   </style>
 </head>
 <body>
-
-  <div class="navbar">
-    <div style="display:flex; gap:10px;">
-      <button onclick="switchPage('cal')">📅 課程表預約</button>
-      <button id="btn-nav-manage" style="display:none; background:#f59e0b; color:#111827; font-weight:bold;" onclick="switchPage('manage')">👥 老師管理後台</button>
-    </div>
-    <button onclick="toggleSidebar()">👤 個人課堂點數</button>
-  </div>
-
-  <div id="sidebar" class="sidebar">
-    <span style="cursor:pointer; color:#9ca3af;" onclick="toggleSidebar()">【關閉】</span>
-    <h3>學員資訊</h3>
-    <div style="border:1px solid #374151; padding:15px; border-radius:8px; background:#111827; line-height:2;">
-      <div>學員姓名：<span id="sidebar-name" style="color:#fff; font-weight:bold;">--</span></div>
-      <div>剩餘堂數：<span id="sidebar-points" style="color:#10b981; font-weight:bold;">-- 堂</span></div>
-    </div>
-    <p id="admin-status" style="margin-top:20px; font-size:12px; color:#6b7280;">身份：學員</p>
-  </div>
-
-  <div class="page-container">
-    <div id="calendar-page">
-      <h2 id="teacher-title-display">學員預約與課堂扣點系統</h2>
-      
-      <div class="room-selector">
-        <button id="btn-cat-pilates" class="room-btn active" onclick="switchCategory('pilates')">🧘‍♀️ 皮拉提斯 (老師開課制)</button>
-        <button id="btn-cat-fitness" class="room-btn" onclick="switchCategory('fitness')">🏋️‍♂️ 健身私教 (學員自由預約)</button>
-        <input type="date" id="calendar-date-input" style="margin-left:auto; background:#1f2937; border:1px solid #374151; color:#10b981; padding:6px; border-radius:6px;" onchange="currentStartDate = new Date(this.value); renderCalendar();">
-      </div>
-
-      <table>
-        <thead><tr id="calendar-th-row"></tr></thead>
-        <tbody id="calendar-body"></tbody>
-      </table>
-    </div>
-
-    <div id="admin-page" style="display:none;">
-      <h2>👥 老師後台：學員點數與開課管理</h2>
-
-      <div style="border:1px solid #374151; border-radius:12px; padding:20px; background:#111827; margin-top:20px; display:flex; justify-content:space-between; align-items:center;">
-        <div>
-          <h4 style="margin:0; color:#fff;">預約扣點機制設定</h4>
-          <p style="margin:4px 0 0 0; font-size:12px; color:#9ca3af;">關閉後學員預約將不檢查也不扣除剩餘堂數（適合免費排課教練）</p>
-        </div>
-        <button id="toggle-deduct-btn" onclick="toggleDeductMode()" style="font-weight:bold;"></button>
-      </div>
-      
-      <div style="border:1px solid #374151; border-radius:12px; padding:20px; background:#111827; margin-top:20px;">
-        <h3>全體學員課堂點數名單</h3>
-        <table style="margin-top:10px;">
-          <thead>
-            <tr>
-              <th style="text-align:left; padding-left:15px;">學員 LINE 名稱</th>
-              <th>目前剩餘堂數</th>
-              <th>手動儲值/調整</th>
-            </tr>
-          </thead>
-          <tbody id="admin-student-list"></tbody>
-        </table>
-      </div>
-
-      <div style="border:1px solid #374151; border-radius:12px; padding:20px; background:#111827; margin-top:20px;">
-        <h3>系統操作日誌</h3>
-        <div id="admin-log-box" style="max-height:180px; overflow-y:auto; font-size:12px; font-family:monospace; color:#9ca3af;"></div>
-      </div>
-    </div>
-  </div>
-
+  <h1>👑 學生預約 SaaS 平台 - 總管理者後台</h1>
+  <button onclick="addTeacher()">➕ 開通新增教練租用帳號</button>
+  <table>
+    <thead>
+      <tr>
+        <th>教練代碼 (ID)</th>
+        <th>教練/工作室名稱</th>
+        <th>教練 LINE 名稱</th>
+        <th>預設模式 / 扣點</th>
+        <th>狀態</th>
+        <th>專屬預約連結</th>
+        <th>操作權限</th>
+      </tr>
+    </thead>
+    <tbody id="teacher-list"></tbody>
+  </table>
 </body>
 </html>
