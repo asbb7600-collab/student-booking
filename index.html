@@ -38,7 +38,7 @@
 
     let lineUserName = "";
     let isAdmin = false; 
-    let currentCategory = "pilates"; // pilates: 皮拉提斯(開課制), fitness: 健身私教(自由預約)
+    let currentCategory = "pilates"; 
     let currentStartDate = new Date();
 
     function startFirebaseListeners() {
@@ -53,7 +53,6 @@
 
         document.getElementById("teacher-title-display").innerText = `${teacherInfo.name || "教練"} - 學員預約系統`;
         
-        // 套用老師預設設定
         if (teacherInfo.mode) currentCategory = teacherInfo.mode;
         updateModeButtons();
         updateDeductToggleUI();
@@ -174,7 +173,8 @@
         d.setDate(startDate.getDate() + i);
         daysArr.push({
           displayTh: `${d.getMonth() + 1}/${d.getDate()} (${weekNames[d.getDay()]})`,
-          dbKey: `${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')}`
+          dbKey: `${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')}`,
+          dayNum: d.getDay()
         });
       }
       return daysArr;
@@ -194,7 +194,8 @@
 
       let htmlCode = '';
 
-      for(let h = 8; h <= 20; h++) {
+      // 時間範圍修改為 07:00 ~ 22:00
+      for(let h = 7; h <= 22; h++) {
         let timeStr = `${h.toString().padStart(2, '0')}:00`;
         htmlCode += `<tr><td class="time-col">${timeStr}</td>`;
 
@@ -203,16 +204,16 @@
           const slotData = studentBookings[slotKey] || {};
           
           let bookedList = [];
-          let maxCapacity = 1;
+          let maxCapacity = 4; // 兩種模式預設上限皆改為 4 人
           let isOpen = false;
 
           if (Array.isArray(slotData)) {
             bookedList = slotData;
             isOpen = true;
-            maxCapacity = currentCategory === "pilates" ? 4 : 1;
+            maxCapacity = 4;
           } else {
             bookedList = slotData.booked || [];
-            maxCapacity = slotData.max || (currentCategory === "pilates" ? 4 : 1);
+            maxCapacity = slotData.max || 4;
             isOpen = currentCategory === "fitness" ? (slotData.isOpen !== false) : (slotData.isOpen === true);
           }
 
@@ -251,7 +252,6 @@
       const categoryName = currentCategory === "pilates" ? "皮拉提斯課程" : "健身私教課";
       const isUserBooked = bookedList.some(b => b.name === lineUserName);
 
-      // === 老師 (管理者) 操作邏輯 ===
       if (isAdmin) {
         let action = prompt(
           `【老師管理時段】\n模式：${categoryName}\n時段：${dateKey} ${timeStr}\n目前狀態：${isOpen ? '開放中' : '關閉/未開課'}\n人數：${bookedList.length}/${maxCapacity}\n名單：${bookedList.map(b=>b.name).join(', ') || '無'}\n\n` +
@@ -264,8 +264,8 @@
         if (action === "1") {
           let newOpenState = !isOpen;
           let newMax = maxCapacity;
-          if (newOpenState && currentCategory === "pilates") {
-            let inputMax = prompt("請設定此皮拉提斯課程開課人數上限：", "4");
+          if (newOpenState) {
+            let inputMax = prompt("請設定此課程人數上限：", "4");
             if (inputMax) newMax = parseInt(inputMax) || 4;
           }
           db.ref(`${DB_BOOKINGS}/${slotKey}`).set({
@@ -300,7 +300,6 @@
         return;
       }
 
-      // === 學員預約 / 取消邏輯 ===
       if (!isOpen) {
         alert("該時段目前未開放預約，請選擇其他時段！");
         return;
@@ -344,6 +343,102 @@
         }
         addSystemLog(`學員 [${lineUserName}] 預約了 ${categoryName} (${dateKey} ${timeStr})`);
         alert("預約成功！期待您的到課！");
+      }
+    }
+
+    // === 批次開課與預約系統 ===
+    function openBatchModal() {
+      const weekDaysText = ["日", "一", "二", "三", "四", "五", "六"];
+      const dayStr = prompt(`【批次${isAdmin ? '開課/關課' : '預約'}選單】\n請輸入欲批次的星期幾 (數字 0~6，例: 3 代表禮拜三)：`, "3");
+      if (dayStr === null) return;
+      const targetDay = parseInt(dayStr);
+      if (isNaN(targetDay) || targetDay < 0 || targetDay > 6) {
+        alert("輸入無效，請輸入 0~6 的數字！");
+        return;
+      }
+
+      const hourStr = prompt(`請輸入時間整點 (數字 7~22，例: 19 代表 19:00)：`, "19");
+      if (hourStr === null) return;
+      const targetHour = parseInt(hourStr);
+      if (isNaN(targetHour) || targetHour < 7 || targetHour > 22) {
+        alert("輸入無效，時間請在 7~22 之間！");
+        return;
+      }
+
+      const weeksCountStr = prompt(`請輸入欲批次套用的週數 (例如輸入 4 代表連續4週)：`, "4");
+      if (weeksCountStr === null) return;
+      const weeksCount = parseInt(weeksCountStr) || 4;
+
+      // 計算未來幾週目標星期的日期
+      const datesToApply = [];
+      let checkDate = new Date();
+      while (datesToApply.length < weeksCount) {
+        if (checkDate.getDay() === targetDay) {
+          const y = checkDate.getFullYear();
+          const m = (checkDate.getMonth() + 1).toString().padStart(2, '0');
+          const d = checkDate.getDate().toString().padStart(2, '0');
+          datesToApply.push(`${y}-${m}-${d}`);
+        }
+        checkDate.setDate(checkDate.getDate() + 1);
+      }
+
+      const categoryName = currentCategory === "pilates" ? "皮拉提斯" : "健身私教";
+      
+      // 老師批次處理邏輯
+      if (isAdmin) {
+        const action = prompt(`將針對【每週${weekDaysText[targetDay]} ${targetHour}:00】共 ${weeksCount} 週進行批次設定：\n[1] 批次開啟預約\n[2] 批次關閉預約`);
+        if (action === "1") {
+          let maxInput = prompt("請設定批次開課的人數上限：", "4");
+          let maxVal = parseInt(maxInput) || 4;
+          datesToApply.forEach(dKey => {
+            const slotKey = `${currentCategory}_${dKey}_${targetHour}`;
+            const existing = studentBookings[slotKey] || {};
+            const bookedList = Array.isArray(existing) ? existing : (existing.booked || []);
+            db.ref(`${DB_BOOKINGS}/${slotKey}`).set({ isOpen: true, max: maxVal, booked: bookedList });
+          });
+          addSystemLog(`老師批次開啟了每週${weekDaysText[targetDay]} ${targetHour}:00 共 ${weeksCount} 堂課程`);
+          alert("批次開課成功！");
+        } else if (action === "2") {
+          datesToApply.forEach(dKey => {
+            const slotKey = `${currentCategory}_${dKey}_${targetHour}`;
+            const existing = studentBookings[slotKey] || {};
+            const bookedList = Array.isArray(existing) ? existing : (existing.booked || []);
+            db.ref(`${DB_BOOKINGS}/${slotKey}`).set({ isOpen: false, max: 4, booked: bookedList });
+          });
+          addSystemLog(`老師批次關閉了每週${weekDaysText[targetDay]} ${targetHour}:00 共 ${weeksCount} 堂課程`);
+          alert("批次關閉成功！");
+        }
+        return;
+      }
+
+      // 學員批次預約邏輯
+      const userPoints = studentDatabase[lineUserName]?.points || 0;
+      if (teacherInfo.deductPoints !== false && userPoints < weeksCount) {
+        alert(`【點數不足】批次預約連續 ${weeksCount} 週需要 ${weeksCount} 堂點數，您目前僅有 ${userPoints} 堂！`);
+        return;
+      }
+
+      if (confirm(`【確認批次預約】\n預約項目：${categoryName}\n時段：每週${weekDaysText[targetDay]} ${targetHour}:00\n共計：${weeksCount} 堂\n${teacherInfo.deductPoints !== false ? `將自動扣除 ${weeksCount} 堂課堂點數` : '是否確認送出預約？'}`)) {
+        let successCount = 0;
+        datesToApply.forEach(dKey => {
+          const slotKey = `${currentCategory}_${dKey}_${targetHour}`;
+          const existing = studentBookings[slotKey] || {};
+          let bookedList = Array.isArray(existing) ? existing : (existing.booked || []);
+          let isOpen = currentCategory === "fitness" ? (existing.isOpen !== false) : (existing.isOpen === true);
+          let maxCapacity = existing.max || 4;
+
+          if (isOpen && bookedList.length < maxCapacity && !bookedList.some(b => b.name === lineUserName)) {
+            bookedList.push({ name: lineUserName, time: Date.now() });
+            db.ref(`${DB_BOOKINGS}/${slotKey}`).set({ isOpen: true, max: maxCapacity, booked: bookedList });
+            successCount++;
+          }
+        });
+
+        if (successCount > 0 && teacherInfo.deductPoints !== false) {
+          db.ref(`${DB_STUDENTS}/${lineUserName}/points`).transaction(p => (p || 0) - successCount);
+        }
+        addSystemLog(`學員 [${lineUserName}] 批次預約每週${weekDaysText[targetDay]} ${targetHour}:00 成功預約 ${successCount} 堂`);
+        alert(`批次預約完成！成功預約 ${successCount} 堂課程！`);
       }
     }
 
@@ -399,9 +494,10 @@
     .page-container { max-width: 1000px; width: 95%; background: #1f2937; border: 1px solid #374151; border-radius: 16px; padding: 30px; box-sizing: border-box; margin-top: 20px; margin-bottom: 60px; }
     .sidebar { position: fixed; top: 0; right: -320px; width: 300px; height: 100%; background: #1f2937; border-left: 1px solid #374151; padding: 40px 24px; transition: right 0.3s; z-index: 1000; box-sizing: border-box; }
     .sidebar.open { right: 0; }
-    .room-selector { display: flex; gap: 10px; margin-bottom: 25px; background: #111827; padding: 8px; border-radius: 12px; align-items: center; }
+    .room-selector { display: flex; gap: 10px; margin-bottom: 25px; background: #111827; padding: 8px; border-radius: 12px; align-items: center; flex-wrap: wrap; }
     .room-btn { background: transparent; border: none; padding: 10px 20px; color: #9ca3af; font-size: 14px; font-weight: bold; cursor: pointer; border-radius: 8px; }
     .room-btn.active { background: #10b981; color: #111827; }
+    .batch-btn { background: #8b5cf6; color: #fff; border: none; padding: 8px 14px; font-size: 13px; font-weight: bold; border-radius: 8px; cursor: pointer; }
     table { width: 100%; border-collapse: separate; border-spacing: 0; background: #111827; border: 1px solid #374151; border-radius: 12px; overflow: hidden; }
     th, td { border-bottom: 1px solid #374151; border-right: 1px solid #374151; text-align: center; font-size: 13px; height: 48px; color: #d1d5db; padding: 4px; }
     th { background: #1f2937; color: #10b981; }
@@ -439,7 +535,8 @@
       
       <div class="room-selector">
         <button id="btn-cat-pilates" class="room-btn active" onclick="switchCategory('pilates')">🧘‍♀️ 皮拉提斯 (老師開課制)</button>
-        <button id="btn-cat-fitness" class="room-btn" onclick="switchCategory('fitness')">🏋️‍♂️ 健身私教 (學員自由預約)</button>
+        <button id="btn-cat-fitness" class="room-btn" onclick="switchCategory('fitness')">🏋️‍♂️ 健身私教 (開放預約)</button>
+        <button class="batch-btn" onclick="openBatchModal()">⚡ 批次開課/預約</button>
         <input type="date" id="calendar-date-input" style="margin-left:auto; background:#1f2937; border:1px solid #374151; color:#10b981; padding:6px; border-radius:6px;" onchange="currentStartDate = new Date(this.value); renderCalendar();">
       </div>
 
