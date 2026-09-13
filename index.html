@@ -125,7 +125,6 @@
       }
     }
 
-    // === 日期切換控制（向左/向右跳頁） ===
     function changeWeek(offsetDays) {
       currentStartDate.setDate(currentStartDate.getDate() + offsetDays);
       syncDatePickerValue();
@@ -282,6 +281,7 @@
       const categoryName = currentCategory === "pilates" ? "皮拉提斯課程" : "健身私教課";
       const isUserBooked = bookedList.some(b => b.name === lineUserName);
 
+      // === 老師 (管理者) 操作邏輯 ===
       if (isAdmin) {
         let action = prompt(
           `【老師管理時段】\n模式：${categoryName}\n時段：${dateKey} ${timeStr}\n目前狀態：${isOpen ? '開放中' : '關閉/未開課'}\n人數：${bookedList.length}/${maxCapacity}\n名單：${bookedList.map(b=>b.name).join(', ') || '無'}\n\n` +
@@ -342,21 +342,56 @@
         return;
       }
 
+      // === 學員預約 / 取消邏輯 ===
       if (!isOpen) {
         alert("該時段目前未開放預約，請選擇其他時段！");
         return;
       }
 
+      // === 學員取消預約 (包含單週 vs 全部批次取消選項) ===
       if (isUserBooked) {
-        if (confirm(`【取消預約】\n您已預約：${categoryName}\n時段：${dateKey} ${timeStr}\n\n是否確定取消？`)) {
+        let cancelOpt = prompt(
+          `【取消預約選項】\n您已預約：${categoryName}\n時段：${dateKey} ${timeStr}\n\n` +
+          `請選擇取消方式：\n` +
+          `[1] 僅取消今天 (這 1 堂)\n` +
+          `[2] 取消今天與之後【所有連續固定週數】預約\n\n` +
+          `* 取消的堂數將自動退還至您的帳戶`, "1"
+        );
+
+        if (cancelOpt === "1") {
           bookedList = bookedList.filter(b => b.name !== lineUserName);
           db.ref(`${DB_BOOKINGS}/${slotKey}`).set({ isOpen: true, max: maxCapacity, booked: bookedList });
-          
           if (teacherInfo.deductPoints !== false) {
             db.ref(`${DB_STUDENTS}/${lineUserName}/points`).transaction(p => (p || 0) + 1);
           }
-          addSystemLog(`學員 [${lineUserName}] 取消了 ${categoryName} (${dateKey} ${timeStr})`);
-          alert("預約已取消！");
+          addSystemLog(`學員 [${lineUserName}] 取消了 ${categoryName} (${dateKey} ${timeStr}) 單堂預約`);
+          alert("已取消今天這堂預約，堂數已退回帳戶！");
+        } else if (cancelOpt === "2") {
+          // 搜尋未來 12 週同時間是否有預約並一併取消
+          const futureDates = getFutureDates(rawDateISO, hour, 12);
+          let refundedCount = 0;
+
+          futureDates.forEach(dKey => {
+            const key = `${currentCategory}_${dKey}_${hour}`;
+            const existing = studentBookings[key] || {};
+            let list = Array.isArray(existing) ? existing : (existing.booked || []);
+            
+            if (list.some(b => b.name === lineUserName)) {
+              list = list.filter(b => b.name !== lineUserName);
+              db.ref(`${DB_BOOKINGS}/${key}`).set({ 
+                isOpen: existing.isOpen !== undefined ? existing.isOpen : true, 
+                max: existing.max || 4, 
+                booked: list 
+              });
+              refundedCount++;
+            }
+          });
+
+          if (refundedCount > 0 && teacherInfo.deductPoints !== false) {
+            db.ref(`${DB_STUDENTS}/${lineUserName}/points`).transaction(p => (p || 0) + refundedCount);
+          }
+          addSystemLog(`學員 [${lineUserName}] 取消了每週${timeStr}連續 ${refundedCount} 堂預約`);
+          alert(`已為您一口氣取消後續共 ${refundedCount} 堂預約，並全額退回 ${refundedCount} 堂點數！`);
         }
         return;
       }
@@ -416,6 +451,7 @@
       }
     }
 
+    // === 老師後台：學員點數、修改與刪除管理 ===
     function updateAdminDashboard() {
       const container = document.getElementById("admin-student-list");
       if(!container) return;
@@ -428,7 +464,9 @@
             <td style="color:#fff; font-weight:bold; text-align:left; padding-left:15px;">${sName}</td>
             <td style="color:#10b981; font-weight:bold;">${pts} 堂</td>
             <td>
-              <button style="padding:4px 8px; font-size:11px;" onclick="addStudentPoints('${sName}')">➕ 儲值堂數</button>
+              <button style="padding:4px 8px; font-size:11px; background:#10b981; color:#111827; font-weight:bold;" onclick="addStudentPoints('${sName}')">➕ 儲值堂數</button>
+              <button style="padding:4px 8px; font-size:11px; background:#3b82f6; color:#fff;" onclick="setStudentPointsDirectly('${sName}')">✏️ 修改點數</button>
+              <button style="padding:4px 8px; font-size:11px; background:#ef4444; color:#fff;" onclick="deleteStudentAccount('${sName}')">🗑️ 刪除會員</button>
             </td>
           </tr>
         `;
@@ -441,17 +479,41 @@
       }
     }
 
+    // 1. 儲值堂數 (累加)
     function addStudentPoints(sName) {
       const currentPts = studentDatabase[sName]?.points || 0;
-      const addStr = prompt(`【學員點數儲值 - ${sName}】\n目前剩餘：${currentPts} 堂\n\n請輸入欲增加或調整的堂數：`, "10");
+      const addStr = prompt(`【學員點數儲值 - ${sName}】\n目前剩餘：${currentPts} 堂\n\n請輸入欲增加的堂數 (如輸入 10 增加 10 堂)：`, "10");
       if(addStr !== null) {
         const val = parseInt(addStr);
         if(!isNaN(val)) {
           const newPts = currentPts + val;
           db.ref(`${DB_STUDENTS}/${sName}/points`).set(newPts);
-          addSystemLog(`老師為 [${sName}] 儲值/調整 ${val} 堂 (現有總堂數：${newPts} 堂)`);
+          addSystemLog(`老師為 [${sName}] 儲值 ${val} 堂 (最新堂數：${newPts} 堂)`);
           alert(`更新成功！現有堂數：${newPts} 堂`);
         }
+      }
+    }
+
+    // 2. 直接重設/修改點數 (設定絕對數字)
+    function setStudentPointsDirectly(sName) {
+      const currentPts = studentDatabase[sName]?.points || 0;
+      const setStr = prompt(`【直接修改點數 - ${sName}】\n目前堂數：${currentPts} 堂\n\n請輸入要變更為的總堂數：`, currentPts);
+      if(setStr !== null) {
+        const val = parseInt(setStr);
+        if(!isNaN(val) && val >= 0) {
+          db.ref(`${DB_STUDENTS}/${sName}/points`).set(val);
+          addSystemLog(`老師將學員 [${sName}] 的總堂數直接修訂為 ${val} 堂`);
+          alert(`已成功將 ${sName} 的堂數修訂為 ${val} 堂！`);
+        }
+      }
+    }
+
+    // 3. 刪除學員帳號
+    function deleteStudentAccount(sName) {
+      if (confirm(`⚠️ 警告：確定要刪除學員 [${sName}] 嗎？\n刪除後該學員的剩餘堂數與歷史紀錄將會被完全清除！`)) {
+        db.ref(`${DB_STUDENTS}/${sName}`).remove();
+        addSystemLog(`老師刪除了學員 [${sName}] 的會員資料`);
+        alert(`已成功刪除學員 [${sName}]！`);
       }
     }
 
@@ -543,7 +605,7 @@
             <tr>
               <th style="text-align:left; padding-left:15px;">學員 LINE 名稱</th>
               <th>目前剩餘堂數</th>
-              <th>手動儲值/調整</th>
+              <th>操作：儲值 / 修改 / 刪除</th>
             </tr>
           </thead>
           <tbody id="admin-student-list"></tbody>
