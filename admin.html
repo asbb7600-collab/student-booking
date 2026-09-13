@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <title>SaaS 平台總管理員控制台</title>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyBnvqcHnCfjAdBoF-qT03X0gpInzSZtiGE",
+      authDomain: "jimai-booking.firebaseapp.com",
+      databaseURL: "https://jimai-booking-default-rtdb.firebaseio.com",
+      projectId: "jimai-booking",
+      storageBucket: "jimai-booking.firebasestorage.app",
+      messagingSenderId: "716257034873",
+      appId: "1:716257034873:web:e942e1e8c22b70be618aa8"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    document.addEventListener("DOMContentLoaded", () => {
+      db.ref("teachers").on("value", (snapshot) => {
+        const teachers = snapshot.val() || {};
+        let html = '';
+        for (let tid in teachers) {
+          const info = teachers[tid].info || {};
+          const statusBadge = info.status === 'active' ? '🟢 服務中' : '🔴 停權';
+          const link = `https://liff.line.me/2010786850-Dl999iMJ?teacher=${tid}`;
+          
+          html += `
+            <tr>
+              <td><b>${tid}</b></td>
+              <td>${info.name || '未命名'}</td>
+              <td>${info.ownerName || '未指定'}</td>
+              <td>${statusBadge}</td>
+              <td><a href="${link}" target="_blank" style="color:#34d399;">點此開啟預約頁</a></td>
+              <td>
+                <button onclick="toggleStatus('${tid}', '${info.status}')">切換 開通/停權</button>
+              </td>
+            </tr>
+          `;
+        }
+        document.getElementById("teacher-list").innerHTML = html || '<tr><td colspan="6">目前尚無教練租用中</td></tr>';
+      });
+    });
+
+    function addTeacher() {
+      const tid = prompt("請輸入新教練代碼 (例: chang, lin, teacher01):");
+      if (!tid) return;
+      const tName = prompt("請輸入教練名稱/工作室名稱 (例: 張教練皮拉提斯):");
+      const ownerName = prompt("請輸入教練的 LINE 顯示名稱 (用來給予教練管理權限):");
+      
+      db.ref(`teachers/${tid}/info`).set({
+        name: tName || "新教練",
+        ownerName: ownerName || "",
+        status: "active",
+        createdAt: Date.now()
+      });
+      alert(`已成功開通教練 [${tName}]！\n專屬連結：https://liff.line.me/2010786850-Dl999iMJ?teacher=${tid}`);
+    }
+
+    function toggleStatus(tid, currentStatus) {
+      const nextStatus = currentStatus === 'active' ? 'suspended' : 'active';
+      db.ref(`teachers/${tid}/info/status`).set(nextStatus);
+    }
+  </script>
+  <style>
+    body { font-family: sans-serif; background: #111827; color: #fff; padding: 40px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #374151; padding: 12px; text-align: left; }
+    th { background: #1f2937; }
+    button { background: #10b981; color: #111827; font-weight: bold; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1>👑 學生預約 SaaS 平台 - 總管理者後台</h1>
+  <button onclick="addTeacher()">➕ 開通新增教練租用帳號</button>
+  <table>
+    <thead>
+      <tr>
+        <th>教練代碼 (ID)</th>
+        <th>教練/工作室名稱</th>
+        <th>教練 LINE 名稱</th>
+        <th>狀態</th>
+        <th>專屬預約連結</th>
+        <th>操作權限</th>
+      </tr>
+    </thead>
+    <tbody id="teacher-list"></tbody>
+  </table>
+</body>
+</html>
