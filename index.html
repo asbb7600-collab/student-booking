@@ -5,15 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>學員預約與課堂扣點系統</title>
   
-  <!-- LINE LIFF SDK -->
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
-
-  <!-- Firebase SDK (v9 相容版本) -->
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 
   <script>
-    // 請替換為您的 Firebase 設定金鑰 (建議可先延用相同的 Firebase 專案，資料節點會自動完全隔離)
     const firebaseConfig = {
       apiKey: "AIzaSyBnvqcHnCfjAdBoF-qT03X0gpInzSZtiGE",
       authDomain: "jimai-booking.firebaseapp.com",
@@ -27,33 +23,49 @@
     firebase.initializeApp(firebaseConfig);
     const db = firebase.database();
 
-    // 學生版專屬資料節點 (與教練版完全分開)
-    const DB_STUDENTS = "studentDatabase";
-    const DB_BOOKINGS = "studentBookings";
-    const DB_LOGS = "studentSystemLogs";
+    // 抓取網址上的 ?teacher=xxx 參數，預設為 hank
+    const urlParams = new URLSearchParams(window.location.search);
+    const currentTeacherId = urlParams.get('teacher') || 'hank';
 
+    // 依教練 ID 動態隔離 Firebase 資料節點
+    const DB_TEACHER_INFO = `teachers/${currentTeacherId}/info`;
+    const DB_STUDENTS = `teachers/${currentTeacherId}/students`;
+    const DB_BOOKINGS = `teachers/${currentTeacherId}/bookings`;
+    const DB_LOGS = `teachers/${currentTeacherId}/logs`;
+
+    let teacherInfo = {};
     let studentDatabase = {};
     let studentBookings = {};
     let systemLogs = [];
 
     let lineUserName = "";
-    let isAdmin = false; // 老師/管理者
-    let currentCategory = "group"; // group: 團體床(多床), private: 1對1私教
+    let isAdmin = false; 
+    let currentCategory = "group"; 
     let currentStartDate = new Date();
 
     function startFirebaseListeners() {
-      // 監聽學生帳戶資料
+      // 監聽教練權限狀態
+      db.ref(DB_TEACHER_INFO).on("value", (snapshot) => {
+        teacherInfo = snapshot.val() || { name: "教練", status: "active" };
+        document.getElementById("teacher-title-display").innerText = `${teacherInfo.name || "教練"} - 學員預約系統`;
+        
+        if (teacherInfo.status === "suspended") {
+          document.body.innerHTML = `<div style="color:#fff; text-align:center; padding-top:100px; font-size:18px;">⚠️ 該教練服務已到期或暫停使用，請聯繫管理員續費。</div>`;
+        }
+      });
+
+      // 監聽學生資料
       db.ref(DB_STUDENTS).on("value", (snapshot) => {
         studentDatabase = snapshot.val() || {};
         if (lineUserName) {
-          isAdmin = (lineUserName === "蕭斈健 Hank") || (studentDatabase[lineUserName]?.role === "admin");
+          isAdmin = (lineUserName === "蕭斈健 Hank") || (lineUserName === teacherInfo.ownerName) || (studentDatabase[lineUserName]?.role === "admin");
           updateSidebarInfo();
           checkAdminElementsDisplay();
         }
         if (isAdmin) updateAdminDashboard();
       });
 
-      // 監聽課表預約
+      // 監聽預約
       db.ref(DB_BOOKINGS).on("value", (snapshot) => {
         studentBookings = snapshot.val() || {};
         renderCalendar();
@@ -77,7 +89,6 @@
       document.getElementById("calendar-date-input").value = currentStartDate.toISOString().split('T')[0];
       startFirebaseListeners();
 
-      // 已自動替換為您申請的新學生版 LINE LIFF ID
       liff.init({ liffId: "2010786850-Dl999iMJ" })
       .then(() => {
         if (!liff.isLoggedIn()) {
@@ -91,7 +102,7 @@
                 db.ref(`${DB_STUDENTS}/${lineUserName}`).set({
                   points: 0,
                   history: [],
-                  role: lineUserName === "蕭斈健 Hank" ? "admin" : "user"
+                  role: (lineUserName === "蕭斈健 Hank" || lineUserName === teacherInfo.ownerName) ? "admin" : "user"
                 });
               }
             });
@@ -158,7 +169,7 @@
       const tbody = document.getElementById("calendar-body");
       if(!tbody) return;
 
-      const maxCapacity = currentCategory === "group" ? 4 : 1; // 團體課最多4人，1對1私教最多1人
+      const maxCapacity = currentCategory === "group" ? 4 : 1; 
       let htmlCode = '';
 
       for(let h = 8; h <= 20; h++) {
@@ -194,7 +205,6 @@
       const isUserBooked = bookedList.some(b => b.name === lineUserName);
       const categoryName = currentCategory === "group" ? "團體床課程" : "1對1 私教課";
 
-      // === 老師 (管理者) 代訂與取消邏輯 ===
       if (isAdmin) {
         let action = prompt(`【老師管理時段】\n課程：${categoryName}\n時段：${dateKey} ${timeStr}\n目前預約人數：${bookedList.length}/${maxCapacity}\n名單：${bookedList.map(b=>b.name).join(', ') || '無'}\n\n請選擇操作：\n[1] 手動幫學生報名代訂\n[2] 清空此時段所有人並退點\n[3] 關閉此時段`);
         
@@ -220,7 +230,6 @@
         return;
       }
 
-      // === 學員預約 / 取消邏輯 ===
       if (isUserBooked) {
         if (confirm(`【取消預約】\n您已預約：${categoryName}\n時段：${dateKey} ${timeStr}\n\n是否確定取消？(將自動退回 1 堂課堂數)`)) {
           bookedList = bookedList.filter(b => b.name !== lineUserName);
@@ -252,7 +261,6 @@
       }
     }
 
-    // === 老師管理後台：學生點數儲值與管理 ===
     function updateAdminDashboard() {
       const container = document.getElementById("admin-student-list");
       if(!container) return;
@@ -339,10 +347,8 @@
   </div>
 
   <div class="page-container">
-    
-    <!-- 課表頁面 -->
     <div id="calendar-page">
-      <h2>學員預約與課堂扣點系統</h2>
+      <h2 id="teacher-title-display">學員預約與課堂扣點系統</h2>
       
       <div class="room-selector">
         <button id="btn-cat-group" class="room-btn active" onclick="switchCategory('group')">🧘‍♀️ 團體床課程 (最多4人)</button>
@@ -356,10 +362,8 @@
       </table>
     </div>
 
-    <!-- 老師管理頁面 -->
     <div id="admin-page" style="display:none;">
       <h2>👥 老師後台：學員點數與開課管理</h2>
-      
       <div style="border:1px solid #374151; border-radius:12px; padding:20px; background:#111827; margin-top:20px;">
         <h3>全體學員課堂點數名單</h3>
         <table style="margin-top:10px;">
@@ -379,7 +383,6 @@
         <div id="admin-log-box" style="max-height:180px; overflow-y:auto; font-size:12px; font-family:monospace; color:#9ca3af;"></div>
       </div>
     </div>
-
   </div>
 
 </body>
